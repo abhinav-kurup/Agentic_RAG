@@ -1,22 +1,15 @@
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode, tools_condition
 from core.state import AgentState
-from agents.router import RouterAgent, reject_query
+from agents.router import RouterAgent, reject_query, no_docs_found_reply
 from agents.retrieval2 import RetrievalAgent
 from agents.extraction import ExtractionAgent
 from agents.analysis import AnalysisAgent, calculator
 from vectorstore.chroma import VectorStoreManager
 import logging
 import uuid
+from core.conditions import route_query, no_docs_found
 
-logger = logging.getLogger(__name__)
-
-def route_query(state: AgentState) -> str:
-    route = state.get("route", "document")
-    if route == "conversational":
-        return "reject"
-    else:
-        return "retrieval"
 
 class Orchestrator:
     def __init__(self,vector_store:VectorStoreManager = None):
@@ -48,7 +41,14 @@ class Orchestrator:
             }
         )
         
-        builder.add_edge("retrieval", "extraction")
+        # builder.add_edge("retrieval", "extraction")
+        builder.add_conditional_edges(
+            "retrivel",
+            no_docs_found,
+            {
+                "retrieval": "extraction",
+                "no_docs_found": "no_docs_found_reply"
+            }
         builder.add_edge("extraction", "analysis")
         builder.add_edge("reject", END)
         

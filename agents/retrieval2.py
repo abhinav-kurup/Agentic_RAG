@@ -11,6 +11,43 @@ from sentence_transformers import CrossEncoder
 
 logger = logging.getLogger(__name__)
 
+import threading
+
+_cross_encoder_instance = None
+_cross_encoder_lock = threading.Lock()
+_cross_encoder_load_failed = False
+
+
+def get_cross_encoder():
+    """Process-wide lazy singleton. Returns None if disabled or load failed."""
+    global _cross_encoder_instance, _cross_encoder_load_failed
+
+    if not Config.USE_CROSS_ENCODER:
+        return None
+    if _cross_encoder_load_failed:
+        return None
+    if _cross_encoder_instance is not None:
+        return _cross_encoder_instance
+
+    with _cross_encoder_lock:
+        if _cross_encoder_load_failed:
+            return None
+        if _cross_encoder_instance is not None:
+            return _cross_encoder_instance
+        try:
+            logger.info(
+                "Loading CrossEncoder for reranking: %s",
+                Config.CROSS_ENCODER_MODEL,
+            )
+            _cross_encoder_instance = CrossEncoder(Config.CROSS_ENCODER_MODEL)
+            logger.info("CrossEncoder ready")
+        except Exception as e:
+            logger.error("Failed to load CrossEncoder: %s", e)
+            _cross_encoder_load_failed = True
+            return None
+
+    return _cross_encoder_instance
+
 
 class SearchPlan(BaseModel):
     sub_queries: List[str] = Field(
@@ -36,11 +73,17 @@ class RetrievalAgent:
             self.cross_encoder = None
 
         try:
-            print("Structured")
             self.structured_llm = self.llm.with_structured_output(SearchPlan)
             logger.info(f"Initialized with structured output: {model_identifier}")
         except NotImplementedError:
             logger.warning("Structured output not supported, fallback mode")
+            self.structured_llm = None
+        except Exception as e:
+            logger.warning(
+                "Structured output setup failed (%s: %s), fallback mode",
+                type(e).__name__,
+                e,
+            )
             self.structured_llm = None
 
 
@@ -60,24 +103,32 @@ class RetrievalAgent:
 
             logger.info(f"AdvancedRetrievalAgent: Final docs count {len(docs)}")
 
+            status = "Success"
+            metadata_key = "retrieved_count"
+            metadata_val = len(docs)
+
+            if not docs:
+                status = "Error"
+                metadata_key = "error"
+                metadata_val = "No documents found"
+
             log_agent_step(
                 state=state,
                 step_name="AdvancedRetrievalAgent",
-                status="Success",
-                retrieved_count=len(docs),
-                query=query
+                status=status,
+                query=query,
+                **{metadata_key: metadata_val}
             )
 
             return {
                 "retrieved_docs": docs,
                 "audit_log": [{
                     "step": "AdvancedRetrievalAgent",
-                    "status": "Success",
-                    "retrieved_count": len(docs),
-                    "query": query
+                    "status": status,
+                    "query": query,
+                    metadata_key: metadata_val
                 }]
             }
-
         except Exception as e:
             logger.error(f"AdvancedRetrievalAgent Error: {e}")
             return {
@@ -149,14 +200,16 @@ class RetrievalAgent:
                 })
 
         # Cross-Encoder Reranking
-        if self.cross_encoder and all_docs:
+        cross_encoder = get_cross_encoder()
+        if cross_encoder and all_docs:
             try:
                 pairs = [[query, doc["content"]] for doc in all_docs]
-                scores = self.cross_encoder.predict(pairs)
-                
+                with _predict_lock:
+                    scores = cross_encoder.predict(pairs)
+
                 for idx, score in enumerate(scores):
                     all_docs[idx]["score"] = float(score)
-                    
+
                 ranked_docs = sorted(
                     all_docs,
                     key=lambda x: x.get("score", -float('inf')),
@@ -164,7 +217,7 @@ class RetrievalAgent:
                 )
             except Exception as e:
                 logger.error(f"Cross-encoder reranking failed: {e}")
-                ranked_docs = all_docs # Fallback to unranked
+                ranked_docs = all_docs
         else:
             ranked_docs = all_docs
 

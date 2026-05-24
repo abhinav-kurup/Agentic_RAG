@@ -145,3 +145,12 @@ def reject_query(state):
         "final_response": response,
         "audit_log": [{"step": "RejectionHandler", "status": "Out-of-Scope"}]
     }
+
+def no_docs_found_reply(state):
+    from utils.helpers import dump_agent_state
+    dump_agent_state(state, "NoDocsFoundAgent")
+
+    return {
+        "final_response": "I'm sorry, but I can't find any documents that match your query.",
+        "audit_log": [{"step": "NoDocsFoundAgent", "status": "NoDocsFound"}]
+    }

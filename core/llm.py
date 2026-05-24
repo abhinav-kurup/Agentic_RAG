@@ -1,5 +1,6 @@
 from langchain_community.chat_models import ChatOllama
 from langchain_google_genai import ChatGoogleGenerativeAI
+import os
 
 
 

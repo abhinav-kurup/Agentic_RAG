@@ -1,9 +1,10 @@
 from langgraph.graph import StateGraph, END
+from langgraph.prebuilt import ToolNode, tools_condition
 from core.state import AgentState
 from agents.router import RouterAgent, reject_query
 from agents.retrieval2 import RetrievalAgent
 from agents.extraction import ExtractionAgent
-from agents.analysis import AnalysisAgent
+from agents.analysis import AnalysisAgent, calculator
 from vectorstore.chroma import VectorStoreManager
 import logging
 import uuid
@@ -25,6 +26,7 @@ class Orchestrator:
         self.retrieval_agent = RetrievalAgent(vector_store=vector_store)
         self.extraction_agent = ExtractionAgent()
         self.analysis_agent = AnalysisAgent()
+        self.tool_node = ToolNode([calculator])
         
         builder = StateGraph(AgentState)
         
@@ -33,6 +35,7 @@ class Orchestrator:
         builder.add_node("retrieval", self.retrieval_agent.invoke)
         builder.add_node("extraction", self.extraction_agent.invoke)
         builder.add_node("analysis", self.analysis_agent.invoke)
+        builder.add_node("tools", self.tool_node)
         
         builder.set_entry_point("router")
         
@@ -48,7 +51,16 @@ class Orchestrator:
         builder.add_edge("retrieval", "extraction")
         builder.add_edge("extraction", "analysis")
         builder.add_edge("reject", END)
-        builder.add_edge("analysis", END)
+        
+        builder.add_conditional_edges(
+            "analysis",
+            tools_condition,
+            {
+                "tools": "tools",
+                END: END
+            }
+        )
+        builder.add_edge("tools", "analysis")
         
         self.workflow = builder.compile()
 

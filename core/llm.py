@@ -1,5 +1,4 @@
 from langchain_community.chat_models import ChatOllama
-from langchain_google_genai import ChatGoogleGenerativeAI
 import os
 
 
@@ -14,7 +13,7 @@ def get_llm(model_identifier: str, temperature: float = 0.2, timeout: int = 30):
     If no prefix is provided, defaults to ollama.
     """
     if model_identifier.startswith("gemini/"):
-        print("react")
+        from langchain_google_genai import ChatGoogleGenerativeAI
         model_name = model_identifier.split("gemini/")[1]
         return ChatGoogleGenerativeAI(
             model=model_name,

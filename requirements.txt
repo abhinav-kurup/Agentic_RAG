@@ -4,8 +4,12 @@ langchain
 langchain-community
 langchain-core
 langchain-text-splitters
+langchain-chroma
+langchain-huggingface
+langchain-google-genai
 langgraph
 pymupdf
+rank-bm25
 
 transformers
 torch

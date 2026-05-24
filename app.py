@@ -2,6 +2,7 @@ import streamlit as st
 import os
 import sys
 import uuid
+import hashlib
 import logging
 
 
@@ -59,6 +60,12 @@ with st.sidebar:
         key=f"uploader_{st.session_state.uploader_key}"
     )
     
+    replace_existing = st.checkbox(
+        "Replace existing documents on re-upload",
+        value=False,
+        help="If the same filename is already indexed, delete the old version before ingesting.",
+    )
+
     if st.button("Process Documents", type="primary"):
         if not uploaded_files:
             st.warning("Please upload files first.")
@@ -67,25 +74,46 @@ with st.sidebar:
                 all_chunks = []
                 temp_dir = "data/documents"
                 os.makedirs(temp_dir, exist_ok=True)
-                
+                existing_sources = st.session_state.vector_store.get_processed_documents()
+
                 for uploaded_file in uploaded_files:
                     st.write(f"Processing {uploaded_file.name}...")
-                    
+
+                    if uploaded_file.name in existing_sources:
+                        if replace_existing:
+                            removed = st.session_state.vector_store.delete_by_source(
+                                uploaded_file.name
+                            )
+                            st.write(
+                                f"Replaced existing index for {uploaded_file.name} "
+                                f"({removed} chunks removed)."
+                            )
+                        else:
+                            st.warning(
+                                f"Skipped {uploaded_file.name}: already indexed. "
+                                "Enable 'Replace existing documents' to re-ingest."
+                            )
+                            continue
+
                     file_path = os.path.join(temp_dir, uploaded_file.name)
                     with open(file_path, "wb") as f:
                         f.write(uploaded_file.getbuffer())
-                    
+
                     try:
                         pages = st.session_state.loader.load(file_path)
                         st.write(f"✅ Loaded {len(pages)} pages from {uploaded_file.name}")
-                        
-                        doc_id = str(uuid.uuid4())
-                        chunks = st.session_state.chunker.split_documents(pages, doc_id)
+
+                        doc_id = hashlib.sha256(
+                            uploaded_file.name.encode()
+                        ).hexdigest()[:32]
+                        chunks = st.session_state.chunker.split_documents(
+                            pages, doc_id, source=uploaded_file.name
+                        )
                         for c in chunks:
-                            c['metadata']['source'] = uploaded_file.name
-                            
+                            c["metadata"]["source"] = uploaded_file.name
+
                         all_chunks.extend(chunks)
-                        
+
                     except Exception as e:
                         st.error(f"Error processing {uploaded_file.name}: {e}")
                 
@@ -123,6 +151,17 @@ with st.sidebar:
             st.rerun()
         except Exception as e:
             st.error(f"Failed to clear database: {e}")
+
+    if st.button(
+        "🔧 Repair BM25 Index",
+        help="Rebuild keyword index from Chroma if indexes drifted",
+        use_container_width=True,
+    ):
+        try:
+            count = st.session_state.vector_store.rebuild_bm25_from_chroma()
+            st.success(f"BM25 index repaired ({count} chunks).")
+        except Exception as e:
+            st.error(f"Failed to repair BM25 index: {e}")
 
 
 

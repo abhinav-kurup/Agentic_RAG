@@ -1,9 +1,9 @@
 import logging
 import hashlib
+import threading
 from core.config import Config
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 from pydantic import BaseModel, Field
-from langchain_community.chat_models import ChatOllama
 from core.state import AgentState
 from utils.helpers import log_agent_step, dump_agent_state
 from core.llm import get_llm
@@ -11,11 +11,10 @@ from sentence_transformers import CrossEncoder
 
 logger = logging.getLogger(__name__)
 
-import threading
-
 _cross_encoder_instance = None
 _cross_encoder_lock = threading.Lock()
 _cross_encoder_load_failed = False
+_predict_lock = threading.Lock()
 
 
 def get_cross_encoder():
@@ -53,24 +52,13 @@ class SearchPlan(BaseModel):
     sub_queries: List[str] = Field(
         description="1-3 optimized search queries derived from user query"
     )
-    filters: Optional[Dict[str, Any]] = Field(
-        default=None,
-        description="Optional metadata filters"
-    )
-
 
 
 class RetrievalAgent:
-    def __init__(self, vector_store, model_identifier: str = "gemini/gemini-2.5-flash-lite"):
+    def __init__(self, vector_store, model_identifier: str = None):
         self.vector_store = vector_store
+        model_identifier = model_identifier or Config.MODEL_NAME
         self.llm = get_llm(model_identifier, temperature=0.1)
-
-        try:
-            logger.info("Initializing CrossEncoder for reranking...")
-            self.cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
-        except Exception as e:
-            logger.error(f"Failed to load CrossEncoder: {e}")
-            self.cross_encoder = None
 
         try:
             self.structured_llm = self.llm.with_structured_output(SearchPlan)
@@ -85,7 +73,6 @@ class RetrievalAgent:
                 e,
             )
             self.structured_llm = None
-
 
     def invoke(self, state: AgentState) -> Dict[str, Any]:
         dump_agent_state(state, "AdvancedRetrievalAgent")
@@ -117,7 +104,7 @@ class RetrievalAgent:
                 step_name="AdvancedRetrievalAgent",
                 status=status,
                 query=query,
-                **{metadata_key: metadata_val}
+                **{metadata_key: metadata_val},
             )
 
             return {
@@ -126,8 +113,8 @@ class RetrievalAgent:
                     "step": "AdvancedRetrievalAgent",
                     "status": status,
                     "query": query,
-                    metadata_key: metadata_val
-                }]
+                    metadata_key: metadata_val,
+                }],
             }
         except Exception as e:
             logger.error(f"AdvancedRetrievalAgent Error: {e}")
@@ -135,8 +122,8 @@ class RetrievalAgent:
                 "audit_log": [{
                     "step": "AdvancedRetrievalAgent",
                     "status": "Error",
-                    "error": str(e)
-                }]
+                    "error": str(e),
+                }],
             }
 
     def _create_search_plan(self, query: str) -> SearchPlan:
@@ -144,15 +131,14 @@ class RetrievalAgent:
         Smart query planning:
         - Use LLM to breakdown complex queries
         """
-
         if len(query.split()) <= 5:
-            return SearchPlan(sub_queries=[query], filters=None)
+            return SearchPlan(sub_queries=[query])
 
         if self.structured_llm:
             try:
                 prompt = (
                     "Break the user query into 1-3 semantic search queries.\n"
-                    "Extract filters if present.\n\n"
+                    "Do not include metadata filters.\n\n"
                     f"Query: {query}"
                 )
                 plan = self.structured_llm.invoke(prompt)
@@ -162,8 +148,7 @@ class RetrievalAgent:
             except Exception as e:
                 logger.warning(f"Search plan failed, fallback: {e}")
 
-        return SearchPlan(sub_queries=[query], filters=None)
-
+        return SearchPlan(sub_queries=[query])
 
     def _retrieve_documents(self, query: str, plan: SearchPlan) -> List[Dict]:
         """
@@ -172,7 +157,6 @@ class RetrievalAgent:
         - deduplication
         - cross-encoder ranking against original query
         """
-
         all_docs = []
         seen_hashes = set()
 
@@ -182,7 +166,7 @@ class RetrievalAgent:
             results = self.vector_store.hybrid_search(
                 sub_q,
                 k=10,
-                filter=plan.filters
+                filter=None,
             )
 
             for doc in results:
@@ -196,10 +180,9 @@ class RetrievalAgent:
 
                 all_docs.append({
                     "content": content,
-                    "metadata": doc["metadata"]
+                    "metadata": doc["metadata"],
                 })
 
-        # Cross-Encoder Reranking
         cross_encoder = get_cross_encoder()
         if cross_encoder and all_docs:
             try:
@@ -212,8 +195,8 @@ class RetrievalAgent:
 
                 ranked_docs = sorted(
                     all_docs,
-                    key=lambda x: x.get("score", -float('inf')),
-                    reverse=True
+                    key=lambda x: x.get("score", -float("inf")),
+                    reverse=True,
                 )
             except Exception as e:
                 logger.error(f"Cross-encoder reranking failed: {e}")
@@ -224,7 +207,7 @@ class RetrievalAgent:
         final_docs = [
             {
                 "content": d["content"],
-                "metadata": d["metadata"]
+                "metadata": d["metadata"],
             }
             for d in ranked_docs[:5]
         ]

@@ -2,7 +2,7 @@ import pickle
 from rank_bm25 import BM25Okapi
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 import os
 import logging
 from core.config import Config

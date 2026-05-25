@@ -69,6 +69,13 @@ DocuMind AI is a powerful document analysis platform that enables you to have in
 
 ---
 
+### Architecture
+
+![Workflow Diagram](assets/screenshot_architecture.svg)
+*High-level state-machine flow: router → retrieval → extraction → analysis with optional tool calls (looping until END).* 
+
+---
+
 ## Demo
 
 ### Updated Screenshots

@@ -12,3 +12,4 @@ class AgentState(TypedDict):
     extracted_data: Dict[str, Any]
     final_response: Optional[str]
     audit_log: Annotated[List[Dict[str, Any]], operator.add]
+    citations: List[str]

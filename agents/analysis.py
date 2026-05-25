@@ -5,6 +5,14 @@ import logging
 from langchain_core.messages import SystemMessage, HumanMessage
 from utils.helpers import log_agent_step, dump_agent_state
 from langchain_core.tools import tool
+from pydantic import BaseModel
+import json
+
+class LlmResponse(BaseModel):
+    content : str
+    confidence  : float
+
+
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +20,7 @@ logger = logging.getLogger(__name__)
 def calculator(expression: str) -> str:
     """Evaluate a mathematical expression. Use this for all math operations."""
     try:
+        logger.info(f"ToolCalling for expression: {expression}")
         allowed_names = {"abs": abs, "round": round, "min": min, "max": max}
         import math
         allowed_names.update({k: v for k, v in math.__dict__.items() if not k.startswith("__")})
@@ -34,6 +43,7 @@ class AnalysisAgent:
         query = state.get("query", "")
         docs = state.get("retrieved_docs", [])
         extracted = state.get("extracted_data", {}).get("content", "")
+        print("EEEEEEEEEEEEEEEEEEEEE:", docs)
         messages = state.get("messages", [])
         
         context_parts = []
@@ -58,17 +68,58 @@ IMPORTANT RULES:
 - You MUST present this extracted data to the user directly and clearly.
 - Do not be overly literal; if the user asks for a "table" and the extracted data is JSON, format that JSON into a beautifully formatted Markdown table.
 - Do not claim information is missing if it is present in the [Extracted Data] section.
+- If the question says to anser in deatils then make sure you provide a detailed answer, if the question says to answer briefly then make sure you provide a concise answer.
+-If tools are available and necessary for answering accurately (for example: calculations, transformations, external processing, or other specialized operations), use the appropriate tool instead of reasoning manually.
 
 CITATION RULES:
 - You must cite your sources using the format [Source X (Page Y)].
 - NEVER cite "[Extracted Data]" as a source. If you are using information from the [Extracted Data] block, cite the original document name provided above it in the context.
+OUTPUT FORMAT RULES:
+You MUST return ONLY valid JSON in the following format:
 
+{{
+    "answer": "string",
+    "confidence": float,
+    "citations": ["string"]
+}}
+
+JSON RULES:
+- Do not add any content outside the JSON. Do NOT include markdown, explanations, or extra text.
+- Return ONLY valid JSON. 
+- "answer" must contain the final answer to the user query.
+- "confidence" must be a number between 0 and 1.
+- "citations" must be a list of supporting references used in the answer.
+- If no answer is found in the context, return:
+
+{{
+    "answer": "I don't know based on the provided context.",
+    "confidence": 0.0,
+    "citations": []
+}}
+
+EXAMPLE VALID RESPONSE:
+
+{{
+    "answer": "Cybersecurity protects systems, networks, and data from attacks.",
+    "confidence": 0.92,
+    "citations": ["rag_pdf_6_cyber.pdf (Page 1)"]
+}}
 Context:
 {context_str}
 """
 
-        llm_with_tools = self.llm.bind_tools(self.tools)
-        
+        try:
+            llm_with_tools = self.llm.bind_tools(self.tools)
+        except Exception as e:
+            err = repr(e)
+            logger.exception("AnalysisAgent bind_tools failed: %s", err)
+            log_agent_step(
+                state=state,
+                step_name="AnalysisAgent",
+                status="ERROR",
+                error=err
+            )
+            llm_with_tools = self.llm
         try:
             logger.info("AnalysisAgent: Invoking LLM for generation...")
             if not messages:
@@ -86,7 +137,11 @@ Context:
             result_dict = {"messages": new_messages}
             
             if not response.tool_calls:
-                result_dict["final_response"] = response.content
+                print("LLM RESPONSE CONTENT:", response.content)
+                parsed = json.loads(response.content)
+                print("PARSED RESPONSE:", parsed)
+                result_dict["final_response"] = parsed.get("answer", "")
+                result_dict["citations"] = parsed.get("citations", [])
                 log_agent_step(state, "AnalysisAgent", "Success", response_length=len(response.content))
                 result_dict["audit_log"] = [{
                     "step": "AnalysisAgent", 
@@ -104,13 +159,19 @@ Context:
             return result_dict
             
         except Exception as e:
-            logger.error(f"AnalysisAgent Error: {e}")
-            log_agent_step(state, "AnalysisAgent", "Error", error=str(e))
+            err = repr(e)
+            logger.exception("AnalysisAgent generation failed: %s", err)
+            log_agent_step(state, "AnalysisAgent", "Error", error=err, phase="invoke")
             return {
-                "final_response": "I apologize, but I encountered a system issue while analyzing the documents. Please check the Audit Logs or verify the AI model is correctly configured.",
+                "final_response": (
+                    "I apologize, but I encountered a system issue while analyzing "
+                    "the documents. Please check the Audit Logs or verify the AI "
+                    "model is correctly configured."
+                ),
                 "audit_log": [{
-                    "step": "AnalysisAgent", 
-                    "status": "Error", 
-                    "error": str(e)
-                }]
+                    "step": "AnalysisAgent",
+                    "status": "Error",
+                    "error": err,
+                    "phase": "invoke",
+                }],
             }

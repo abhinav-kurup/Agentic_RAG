@@ -46,7 +46,7 @@ DocuMind AI is a powerful document analysis platform that enables you to have in
 - Top-k document retrieval (configurable)
 - Context-aware response generation
 
-### 📊 **Source Citations**
+### � **Source Citations**
 - Every answer includes document references
 - Page numbers for easy verification
 - Expandable source preview with document excerpts
@@ -219,33 +219,8 @@ http://localhost:8501
 
 ### Architecture
 
-```
-┌─────────────────────────────────────────────┐
-│           Streamlit UI Layer                │
-│  (Chat, Document Upload, Audit Viewer)      │
-└──────────────────┬──────────────────────────┘
-                   │
-┌──────────────────▼──────────────────────────┐
-│           LangGraph Orchestrator            │
-│ ┌──────┐ ┌─────────┐ ┌─────────┐ ┌────────┐ │
-│ │Router│→│Retrieval│→│Extract. │→│Analysis│ │
-│ │Agent │ │  Agent  │ │  Agent  │ │ Agent  │ │
-│ └──┬───┘ └─────────┘ └─────────┘ └────────┘ │
-│    │                                        │
-│    ▼                                        │
-│ ┌─────────┐                                 │
-│ │Rejection│                                 │
-│ └─────────┘                                 │
-└──────────────────┬──────────────────────────┘
-                   │
-┌──────────────────▼──────────────────────────┐
-│       Infrastructure Layer                   │
-│  ┌──────────┐  ┌─────────┐  ┌───────────┐  │
-│  │ChromaDB  │  │ Ollama  │  │  Audit    │  │
-│  │(Vectors) │  │(LLM API)│  │  Logger   │  │
-│  └──────────┘  └─────────┘  └───────────┘  │
-└─────────────────────────────────────────────┘
-```
+![Workflow Diagram](assets/screenshot_architecture.svg)
+*High-level state-machine flow: router → retrieval → extraction → analysis with optional tool calls (looping until END).* 
 
 ---
 

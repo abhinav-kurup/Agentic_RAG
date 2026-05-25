@@ -1,5 +1,5 @@
 from langgraph.graph import StateGraph, END
-from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.prebuilt import ToolNode
 from core.state import AgentState
 from agents.router import RouterAgent, reject_query, no_docs_found_reply
 from agents.retrieval2 import RetrievalAgent
@@ -8,7 +8,7 @@ from agents.analysis import AnalysisAgent, calculator
 from vectorstore.chroma import VectorStoreManager
 import logging
 import uuid
-from core.conditions import route_query, no_docs_found
+from core.conditions import route_query, no_docs_found, route_after_analysis
 
 logger = logging.getLogger(__name__)
 
@@ -58,13 +58,17 @@ class Orchestrator:
 
         builder.add_conditional_edges(
             "analysis",
-            tools_condition,
+            route_after_analysis,
             {
                 "tools": "tools",
                 END: END,
             },
         )
         builder.add_edge("tools", "analysis")
+        png_data = self.workflow.get_graph().draw_mermaid_png()
+
+        with open("workflow.png", "wb") as f:
+            f.write(png_data)
 
         self.workflow = builder.compile()
 
@@ -83,8 +87,12 @@ class Orchestrator:
             "audit_log": [{"step": "Orchestrator", "status": "Start", "query": query}],
         }
 
-        logger.info(f"Starting workflow for query: {query}")
-        result = self.workflow.invoke(initial_state)
+        logger.info("Starting workflow for query: %s", query)
+        try:
+            result = self.workflow.invoke(initial_state)
+        except Exception:
+            logger.exception("Workflow failed for query: %s", query)
+            raise
         logger.info("Workflow completed")
 
         from utils.helpers import dump_agent_state

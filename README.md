@@ -72,17 +72,39 @@ DocuMind AI is a powerful document analysis platform that enables you to have in
 
 ## Demo
 
-### Main Interface
-![DocuMind AI Interface](assets/screenshot_main_interface.png)
-*Ask questions and get instant answers with citations from your documents*
+### Updated Screenshots
+The repository images have been refreshed. The three screenshots below illustrate the voice and citation features (these replace the previous demo screenshots):
 
-### Intelligent Query Routing
-![Query Routing](assets/screenshot_query_routing.png)
-*Smart routing detects conversational queries and guides users to ask document-related questions*
+1) Speech-to-Text (STT)
 
-### Document Processing
-![Document Processing](assets/screenshot_document_processing.png)
-*Easy drag-and-drop PDF upload with real-time processing feedback*
+![Speech to Text](assets/screenshot_stt.png)
+*Shows the voice input / recording UI and live transcription result. This image is marked in the app to indicate where users record a question by voice and see the transcribed text before it is submitted.*
+
+2) Text-to-Speech (TTS)
+
+![Text to Speech](assets/screenshot_tts.png)
+*Demonstrates the TTS playback control for assistant replies. The screenshot highlights the audio player that appears under assistant responses when `Read answers aloud` is enabled.*
+
+3) Citation Display
+
+![Citation Display](assets/screenshot_citation.png)
+*Illustrates how source citations are shown directly below assistant responses (document name and page number). The red-marked area in the image highlights the citations list generated from the retrieval pipeline.*
+
+If you want me to also add the actual image files into `assets/` (using the file names above) please upload them or confirm and I will add placeholders.
+
+### Audit Logs
+
+![System Audit Trail](assets/screenshot_audit.png)
+*Shows the Audit Logs page with per-query expanders and structured tables. The UI is designed for fast debugging and compliance review:* 
+
+- Logs are shown newest-first (latest entries at the top). 
+- Each log is rendered inside an expander titled with timestamp and query id so you can quickly scan recent activity. 
+- Inside each expander you'll find:
+    - The full user query and the assistant's final response. 
+    - An "Audit Steps" table showing the agent-by-agent execution with columns such as step, status, retrieved_count, reason, error and timing. The table intentionally omits the repeated query text to reduce clutter.
+    - A "Retrieved Documents" table showing the source filename, page, score, chunk index and a short snippet for quick verification.
+
+Use the "Refresh Logs" button in the app to reload the latest entries from the log store.
 
 ---
 
@@ -251,7 +273,9 @@ ollama pull <model-name>
 Documind/
 ├── agents/                  # LangGraph agents
 │   ├── router.py           # Query classification
-│   ├── retrieval.py        # Vector search
+│   ├── retrieval2.py       # Hybrid vector search
+│   ├── stt.py              # Speech-to-text (Whisper)
+│   ├── tts.py              # Text-to-speech (SpeechT5)
 │   ├── extraction.py       # Data extraction
 │   └── analysis.py         # Response generation
 ├── audit/                  # Logging system

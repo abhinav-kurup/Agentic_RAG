@@ -6,11 +6,11 @@ langchain-core
 langchain-text-splitters
 langchain-chroma
 langchain-huggingface
+langchain-groq
 langchain-google-genai
 langgraph
 pymupdf
 rank-bm25
-
 transformers
 torch
 pandas
@@ -19,3 +19,7 @@ pydantic
 sentence-transformers
 python-multipart
 python-dotenv
+faster-whisper
+soundfile
+datasets
+num2words

@@ -32,10 +32,9 @@ DocuMind AI is a powerful document analysis platform that enables you to have in
 - Prevents unnecessary processing for out-of-scope questions
 - LLM-based classification with keyword fallback for robustness
 
-### 📚 **Multi-Document Support**
-- Upload and process multiple PDF files simultaneously
-- Automatic text extraction and intelligent chunking
-- Persistent vector storage with ChromaDB
+### �️ Speech (STT & TTS)
+- Speech-to-Text (STT): Record voice input and transcribe to text (local or hosted STT engines). See `agents/stt.py` for adapters.
+- Text-to-Speech (TTS): Synthesize assistant replies to audio for browser playback. See `agents/tts.py` for adapters.
 
 ### 💬 **Conversational Interface**
 - Clean, modern chat UI built with Streamlit
@@ -43,7 +42,7 @@ DocuMind AI is a powerful document analysis platform that enables you to have in
 - Message history with context preservation
 
 ### 🔍 **Advanced Retrieval**
-- Semantic similarity search using vector embeddings
+- Hybrid semantic similarity search using vector embeddings with keyword/BM25 fallbacks
 - Top-k document retrieval (configurable)
 - Context-aware response generation
 
@@ -139,6 +138,15 @@ ollama pull qwen2.5:3b
 ollama list
 ```
 
+If you prefer a hosted model provider, you can also configure Groq (or another provider) via environment variables. Example (Groq):
+
+```bash
+# Set GROQ_API_KEY in your environment or .env
+export GROQ_API_KEY=your_groq_api_key_here
+# (Windows PowerShell)
+$env:GROQ_API_KEY = "your_groq_api_key_here"
+```
+
 4. **Configure environment** (optional)
 ```bash
 cp .env.example .env
@@ -197,12 +205,17 @@ http://localhost:8501
 |-----------|-----------|---------|
 | **LLM Framework** | LangChain | Orchestration & chains |
 | **Workflow Engine** | LangGraph | Multi-agent state machine |
-| **LLM Backend** | Ollama | Local LLM inference |
+| **LLM Backend** | Ollama (local) / Groq (hosted) | Local or hosted LLM inference |
 | **Vector Database** | ChromaDB | Embedding storage & search |
 | **Embeddings** | sentence-transformers | all-MiniLM-L6-v2 model |
 | **PDF Processing** | PyMuPDF | Text extraction |
 | **UI Framework** | Streamlit | Web interface |
 | **Config Management** | python-dotenv | Environment variables |
+
+### Speech Support
+
+- **STT Engines**: Local Whisper adapters or hosted STT services (see `agents/stt.py`).
+- **TTS Engines**: Local TTS adapters (SpeechT5) with browser playback (see `agents/tts.py`).
 
 ### Architecture
 
@@ -249,6 +262,13 @@ LLM_MODEL=qwen2.5:3b
 
 # Vector Database
 CHROMA_DB_DIR=data/chroma
+
+# Optional: Groq API (if using hosted models)
+GROQ_API_KEY=
+
+# Voice / Speech settings
+ENABLE_VOICE=true
+ENABLE_TTS=true
 ```
 
 ### Model Selection

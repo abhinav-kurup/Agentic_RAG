@@ -20,13 +20,6 @@ SPEECHT5_MAX_TOKENS = 600
 SAFE_TOKEN_LIMIT = 500
 
 
-# ---------------------------------------------------------------------------
-# Bug Fix 1: Number & Symbol Normalizer
-# SpeechT5 was trained on natural speech. Digits, symbols, markdown
-# map to <unk> tokens which the model silently skips.
-# This converts everything to speakable English words BEFORE tokenizing.
-# ---------------------------------------------------------------------------
-
 def normalize_for_tts(text: str) -> str:
     """
     Convert numbers, symbols, and markdown into speakable plain English.

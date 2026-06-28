@@ -157,7 +157,7 @@ def handle_user_query(prompt: str, tts_enabled: bool = True):
 
 
 @traceable(name="Ingestion Pipeline")
-def ingest_documents(uploaded_files, loader, chunker, vector_store, replace_existing, temp_dir):
+def ingest_documents(uploaded_files, loader, chunker, vector_store, temp_dir):
     all_chunks = []
     existing_sources = vector_store.get_processed_documents()
 
@@ -165,18 +165,11 @@ def ingest_documents(uploaded_files, loader, chunker, vector_store, replace_exis
         st.write(f"Processing {uploaded_file.name}...")
 
         if uploaded_file.name in existing_sources:
-            if replace_existing:
-                removed = vector_store.delete_by_source(uploaded_file.name)
-                st.write(
-                    f"Replaced existing index for {uploaded_file.name} "
-                    f"({removed} chunks removed)."
-                )
-            else:
-                st.warning(
-                    f"Skipped {uploaded_file.name}: already indexed. "
-                    "Enable 'Replace existing documents' to re-ingest."
-                )
-                continue
+            st.warning(
+                f"Skipped {uploaded_file.name}: already indexed. "
+                "Delete the document first to re-ingest."
+            )
+            continue
 
         file_path = os.path.join(temp_dir, uploaded_file.name)
         with open(file_path, "wb") as f:
@@ -250,12 +243,6 @@ with st.sidebar:
         key=f"uploader_{st.session_state.uploader_key}",
     )
 
-    replace_existing = st.checkbox(
-        "Replace existing documents on re-upload",
-        value=False,
-        help="If the same filename is already indexed, delete the old version before ingesting.",
-    )
-
     if st.button("Process Documents", type="primary"):
         if not uploaded_files:
             st.warning("Please upload files first.")
@@ -270,7 +257,6 @@ with st.sidebar:
                         loader=st.session_state.loader,
                         chunker=st.session_state.chunker,
                         vector_store=st.session_state.vector_store,
-                        replace_existing=replace_existing,
                         temp_dir=temp_dir
                     )
                 
@@ -334,16 +320,6 @@ with st.sidebar:
         except Exception as e:
             st.error(f"Failed to clear database: {e}")
 
-    if st.button(
-        "🔧 Repair BM25 Index",
-        help="Rebuild keyword index from Chroma if indexes drifted",
-        use_container_width=True,
-    ):
-        try:
-            count = st.session_state.vector_store.rebuild_bm25_from_chroma()
-            st.success(f"BM25 index repaired ({count} chunks).")
-        except Exception as e:
-            st.error(f"Failed to repair BM25 index: {e}")
 
 
 with tab_chat:

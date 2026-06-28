@@ -6,7 +6,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 from core.state import AgentState
 from agents.planner import PlannerAgent, conversational_reply
-from agents.retrieval import RetrievalAgent
+from agents.retrieval import SingleHopRetrievalAgent, MultiHopRetrievalAgent
 from agents.extraction import ExtractionAgent
 # from agents.analysis import AnalysisAgent, calculator
 from agents.analysis2 import AnalysisAgent, calculator
@@ -28,7 +28,8 @@ class Orchestrator:
         if vector_store is None:
             vector_store = VectorStoreManager()
         self.planner_agent = PlannerAgent()
-        self.retrieval_agent = RetrievalAgent(vector_store=vector_store)
+        self.single_hop_retrieval_agent = SingleHopRetrievalAgent(vector_store=vector_store)
+        self.multi_hop_retrieval_agent = MultiHopRetrievalAgent(vector_store=vector_store)
         self.extraction_agent = ExtractionAgent()
         self.analysis_agent = AnalysisAgent()
         self.tool_node = ToolNode([calculator])
@@ -37,7 +38,8 @@ class Orchestrator:
 
         builder.add_node("router", self.planner_agent.invoke)
         builder.add_node("conversational", conversational_reply)
-        builder.add_node("retrieval", self.retrieval_agent.invoke)
+        builder.add_node("single_hop_retrieval", self.single_hop_retrieval_agent.invoke)
+        builder.add_node("multi_hop_retrieval", self.multi_hop_retrieval_agent.invoke)
         builder.add_node("extraction", self.extraction_agent.invoke)
         builder.add_node("analysis", self.analysis_agent.invoke)
         builder.add_node("tools", self.tool_node)
@@ -49,11 +51,13 @@ class Orchestrator:
             route_query,
             {
                 "conversational": "conversational",
-                "retrieval": "retrieval",
+                "single_hop": "single_hop_retrieval",
+                "multi_hop": "multi_hop_retrieval",
             },
         )
 
-        builder.add_edge("retrieval", "extraction")
+        builder.add_edge("single_hop_retrieval", "extraction")
+        builder.add_edge("multi_hop_retrieval", "extraction")
         builder.add_edge("extraction", "analysis")
         builder.add_edge("conversational", END)
 

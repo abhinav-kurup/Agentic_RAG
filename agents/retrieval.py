@@ -55,7 +55,7 @@ class SearchPlan(BaseModel):
     )
 
 
-class RetrievalAgent:
+class BaseRetrievalAgent:
     def __init__(self, vector_store):
         self.vector_store = vector_store
         model_identifier = Config.RETRIEVAL_MODEL
@@ -299,170 +299,8 @@ class RetrievalAgent:
             
         return docs[:k]
 
-    @traceable(name="Retrieval")
-    def invoke(self, state: AgentState) -> Dict[str, Any]:
-        dump_agent_state(state, "AdvancedRetrievalAgent")
-
-        query = state.get("query", "")
-        if not query:
-            return {"audit_log": [{"step": "AdvancedRetrievalAgent", "status": "Skipped"}]}
-
-        route = state.get("route", "single_hop")
-        subqueries = state.get("subqueries", [])
-
-        logger.info(f"AdvancedRetrievalAgent: Route -> {route}, Subqueries -> {subqueries}")
-
-        try:
-            retrieval_results = []
-            ranked_lists = []
-            ordered_active_subqueries = []
-
-            print(f"\n[Retrieval Route] Chosen Route: {route}")
-            if route == "multi_hop" and subqueries:
-                # Include original query to ensure broad semantic recall alongside specific subqueries
-                active_subqueries = list(set([query] + subqueries))
-                
-                # Adaptive retrieval size (Bug 4 Fix)
-                num_queries = len(active_subqueries)
-                k = max(8, min(15, 40 // num_queries))
-                
-                print(f"[Retrieval Route] Multi-hop active subqueries: {active_subqueries} (k={k})")
-                
-                subquery_to_docs = {}
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future_to_subquery = {
-                        executor.submit(self._retrieve_single_query, query, sub_q, k): sub_q
-                        for sub_q in active_subqueries
-                    }
-                    
-                    for future in concurrent.futures.as_completed(future_to_subquery):
-                        sub_q = future_to_subquery[future]
-                        try:
-                            docs = future.result()
-                            status = "found" if docs else "not_found"
-                            retrieval_results.append({
-                                "subquery": sub_q,
-                                "documents": docs,
-                                "status": status
-                            })
-                            print(f"  -> Subquery '{sub_q}' retrieved {len(docs)} candidate chunks")
-                            subquery_to_docs[sub_q] = docs
-                        except Exception as exc:
-                            logger.error(f"Subquery '{sub_q}' generated an exception: {exc}")
-                            retrieval_results.append({
-                                "subquery": sub_q,
-                                "documents": [],
-                                "status": "not_found"
-                            })
-                            subquery_to_docs[sub_q] = []
-                            
-                # Reconstruct in deterministic order to align with subqueries parameter
-                for sub_q in active_subqueries:
-                    if sub_q in subquery_to_docs:
-                        ordered_active_subqueries.append(sub_q)
-                        ranked_lists.append(subquery_to_docs[sub_q])
-
-                # Fuse ranked lists using Reciprocal Rank Fusion (RRF)
-                final_docs = self._reciprocal_rank_fusion(ranked_lists, ordered_active_subqueries)
-            else:
-                active_queries = subqueries if subqueries else [query]
-                
-                # Adaptive retrieval size: Option B (fallback/single-hop)
-                k = 8
-                
-                print(f"[Retrieval Route] Processing queries: {active_queries} (k={k})")
-                ordered_active_subqueries = list(active_queries)
-                for sub_q in ordered_active_subqueries:
-                    docs = self._retrieve_single_query(query, sub_q, k)
-                    status = "found" if docs else "not_found"
-                    retrieval_results.append({
-                        "subquery": sub_q,
-                        "documents": docs,
-                        "status": status
-                    })
-                    print(f"  -> Query/Subquery '{sub_q}' retrieved {len(docs)} candidate chunks")
-                    ranked_lists.append(docs)
-
-                # Bypassing RRF for single-hop queries: just combine all retrieved documents without RRF scoring
-                final_docs = []
-                seen_hashes = set()
-                for r_list in ranked_lists:
-                    for doc in r_list:
-                        h = hashlib.md5(doc["content"].strip().encode()).hexdigest()
-                        if h not in seen_hashes:
-                            seen_hashes.add(h)
-                            doc["subqueries_matched"] = {query} # Set default matched subquery
-                            final_docs.append(doc)
-
-            print(f"[Retrieval Merging] Total merged candidate documents before reranking: {len(final_docs)}")
-            
-            # Print statement for retrieved documents before cross-encoder with scores
-            print(f"[Retrieval Output] Retrieved documents before cross-encoder:")
-            for idx, doc in enumerate(final_docs):
-                print(f"  {idx + 1}. Source: {doc['metadata'].get('source')} (Page {doc['metadata'].get('page_number')}) | Retrieval Score: {doc.get('score', 0.0):.4f} | RRF Score: {doc.get('rrf_score', 0.0):.4f}")
-
-            # Run global reranking on all merged candidate documents against original/sub-queries (with top-1 retrieved protection)
-            protected_hashes = set()
-            for r_list in ranked_lists:
-                if r_list:
-                    top_doc = r_list[0]
-                    h = hashlib.md5(top_doc["content"].strip().encode()).hexdigest()
-                    protected_hashes.add(h)
-            final_docs = self._rerank_documents(query, final_docs, ordered_active_subqueries, protected_hashes=protected_hashes)
-            
-            print(f"[Reranking Scores] Documents after Cross-Encoder reranking:")
-            for idx, doc in enumerate(final_docs):
-                print(f"  {idx + 1}. Source: {doc['metadata'].get('source')} (Page {doc['metadata'].get('page_number')}) | Score: {doc.get('score')} | RRF: {doc.get('rrf_score')}")
-            
-            # Select diverse and coverage-complete contexts
-            final_docs = self._select_diverse_contexts(final_docs, ordered_active_subqueries, limit=5)
-            
-            # Convert subqueries_matched from set to list for JSON serialization compatibility
-            for d in final_docs:
-                if "subqueries_matched" in d and isinstance(d["subqueries_matched"], set):
-                    d["subqueries_matched"] = sorted(list(d["subqueries_matched"]))
-                    
-            print(f"[Retrieval Output] Top {len(final_docs)} documents sent to AnalysisAgent:")
-            for idx, doc in enumerate(final_docs):
-                print(f"  {idx + 1}. Source: {doc['metadata'].get('source')} (Page {doc['metadata'].get('page_number')}) | Score: {doc.get('score')} | RRF: {doc.get('rrf_score')} | Subqueries: {doc.get('subqueries_matched')}")
-
-            logger.info(f"AdvancedRetrievalAgent: Final merged docs count {len(final_docs)}")
-
-            status_str = "Success"
-            log_agent_step(
-                state=state,
-                step_name="AdvancedRetrievalAgent",
-                status=status_str,
-                query=query,
-                retrieved_count=len(final_docs),
-            )
-
-            return {
-                "retrieved_docs": final_docs,
-                "retrieval_results": retrieval_results,
-                "audit_log": [{
-                    "step": "AdvancedRetrievalAgent",
-                    "status": status_str,
-                    "query": query,
-                    "retrieved_count": len(final_docs),
-                }],
-            }
-        except Exception as e:
-            logger.error(f"AdvancedRetrievalAgent Error: {e}")
-            return {
-                "audit_log": [{
-                    "step": "AdvancedRetrievalAgent",
-                    "status": "Error",
-                    "error": str(e),
-                }],
-            }
-
     def _create_search_plan(self, query: str) -> SearchPlan:
-        """
-        Smart query planning:
-        - Use LLM to breakdown complex queries
-        """
+        """Smart query planning: fallback/legacy helper"""
         if len(query.split()) <= 5:
             return SearchPlan(sub_queries=[query])
 
@@ -480,12 +318,7 @@ class RetrievalAgent:
         return SearchPlan(sub_queries=[query])
 
     def _retrieve_documents(self, query: str, plan: SearchPlan) -> List[Dict]:
-        """
-        Retrieval pipeline:
-        - hybrid search per sub-query
-        - deduplication
-        - cross-encoder ranking against original query
-        """
+        """Retrieval pipeline: legacy helper"""
         all_docs = []
         seen_hashes = set()
 
@@ -542,3 +375,249 @@ class RetrievalAgent:
         ]
 
         return final_docs
+
+
+class SingleHopRetrievalAgent(BaseRetrievalAgent):
+    @traceable(name="SingleHopRetrieval")
+    def invoke(self, state: AgentState) -> Dict[str, Any]:
+        dump_agent_state(state, "SingleHopRetrievalAgent")
+
+        query = state.get("query", "")
+        if not query:
+            return {"audit_log": [{"step": "AdvancedRetrievalAgent", "status": "Skipped"}]}
+
+        subqueries = state.get("subqueries", [])
+        logger.info(f"SingleHopRetrievalAgent: Subqueries -> {subqueries}")
+
+        try:
+            retrieval_results = []
+            ranked_lists = []
+            
+            active_queries = subqueries if subqueries else [query]
+            k = 8
+            
+            print(f"[Retrieval Route] Processing queries: {active_queries} (k={k})")
+            ordered_active_subqueries = list(active_queries)
+            for sub_q in ordered_active_subqueries:
+                docs = self._retrieve_single_query(query, sub_q, k)
+                status = "found" if docs else "not_found"
+                retrieval_results.append({
+                    "subquery": sub_q,
+                    "documents": docs,
+                    "status": status
+                })
+                print(f"  -> Query/Subquery '{sub_q}' retrieved {len(docs)} candidate chunks")
+                ranked_lists.append(docs)
+
+            # Bypassing RRF for single-hop queries: just combine all retrieved documents without RRF scoring
+            final_docs = []
+            seen_hashes = set()
+            for r_list in ranked_lists:
+                for doc in r_list:
+                    h = hashlib.md5(doc["content"].strip().encode()).hexdigest()
+                    if h not in seen_hashes:
+                        seen_hashes.add(h)
+                        doc["subqueries_matched"] = {query} # Set default matched subquery
+                        final_docs.append(doc)
+
+            print(f"[Retrieval Merging] Total merged candidate documents before reranking: {len(final_docs)}")
+            
+            # Print statement for retrieved documents before cross-encoder with scores
+            print(f"[Retrieval Output] Retrieved documents before cross-encoder:")
+            for idx, doc in enumerate(final_docs):
+                print(f"  {idx + 1}. Source: {doc['metadata'].get('source')} (Page {doc['metadata'].get('page_number')}) | Retrieval Score: {doc.get('score', 0.0):.4f} | RRF Score: {doc.get('rrf_score', 0.0):.4f}")
+
+            # Run global reranking on all merged candidate documents against original/sub-queries (with top-1 retrieved protection)
+            protected_hashes = set()
+            for r_list in ranked_lists:
+                if r_list:
+                    top_doc = r_list[0]
+                    h = hashlib.md5(top_doc["content"].strip().encode()).hexdigest()
+                    protected_hashes.add(h)
+            final_docs = self._rerank_documents(query, final_docs, ordered_active_subqueries, protected_hashes=protected_hashes)
+            
+            print(f"[Reranking Scores] Documents after Cross-Encoder reranking:")
+            for idx, doc in enumerate(final_docs):
+                print(f"  {idx + 1}. Source: {doc['metadata'].get('source')} (Page {doc['metadata'].get('page_number')}) | Score: {doc.get('score')} | RRF: {doc.get('rrf_score')}")
+            
+            # Select diverse and coverage-complete contexts
+            final_docs = self._select_diverse_contexts(final_docs, ordered_active_subqueries, limit=5)
+            
+            # Convert subqueries_matched from set to list for JSON serialization compatibility
+            for d in final_docs:
+                if "subqueries_matched" in d and isinstance(d["subqueries_matched"], set):
+                    d["subqueries_matched"] = sorted(list(d["subqueries_matched"]))
+                    
+            print(f"[Retrieval Output] Top {len(final_docs)} documents sent to AnalysisAgent:")
+            for idx, doc in enumerate(final_docs):
+                print(f"  {idx + 1}. Source: {doc['metadata'].get('source')} (Page {doc['metadata'].get('page_number')}) | Score: {doc.get('score')} | RRF: {doc.get('rrf_score')} | Subqueries: {doc.get('subqueries_matched')}")
+
+            logger.info(f"AdvancedRetrievalAgent (SingleHop): Final merged docs count {len(final_docs)}")
+
+            status_str = "Success"
+            log_agent_step(
+                state=state,
+                step_name="AdvancedRetrievalAgent",
+                status=status_str,
+                query=query,
+                retrieved_count=len(final_docs),
+            )
+
+            return {
+                "retrieved_docs": final_docs,
+                "retrieval_results": retrieval_results,
+                "audit_log": [{
+                    "step": "AdvancedRetrievalAgent",
+                    "status": status_str,
+                    "query": query,
+                    "retrieved_count": len(final_docs),
+                }],
+            }
+        except Exception as e:
+            logger.error(f"AdvancedRetrievalAgent Error: {e}")
+            return {
+                "audit_log": [{
+                    "step": "AdvancedRetrievalAgent",
+                    "status": "Error",
+                    "error": str(e),
+                }],
+            }
+
+
+class MultiHopRetrievalAgent(BaseRetrievalAgent):
+    @traceable(name="MultiHopRetrieval")
+    def invoke(self, state: AgentState) -> Dict[str, Any]:
+        dump_agent_state(state, "MultiHopRetrievalAgent")
+
+        query = state.get("query", "")
+        if not query:
+            return {"audit_log": [{"step": "AdvancedRetrievalAgent", "status": "Skipped"}]}
+
+        subqueries = state.get("subqueries", [])
+        logger.info(f"MultiHopRetrievalAgent: Subqueries -> {subqueries}")
+
+        try:
+            retrieval_results = []
+            ranked_lists = []
+            ordered_active_subqueries = []
+
+            # Include original query to ensure broad semantic recall alongside specific subqueries
+            active_subqueries = list(set([query] + subqueries))
+            
+            # Adaptive retrieval size (Bug 4 Fix)
+            num_queries = len(active_subqueries)
+            k = max(8, min(15, 40 // num_queries))
+            
+            print(f"[Retrieval Route] Multi-hop active subqueries: {active_subqueries} (k={k})")
+            
+            subquery_to_docs = {}
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future_to_subquery = {
+                    executor.submit(self._retrieve_single_query, query, sub_q, k): sub_q
+                    for sub_q in active_subqueries
+                }
+                
+                for future in concurrent.futures.as_completed(future_to_subquery):
+                    sub_q = future_to_subquery[future]
+                    try:
+                        docs = future.result()
+                        status = "found" if docs else "not_found"
+                        retrieval_results.append({
+                            "subquery": sub_q,
+                            "documents": docs,
+                            "status": status
+                        })
+                        print(f"  -> Subquery '{sub_q}' retrieved {len(docs)} candidate chunks")
+                        subquery_to_docs[sub_q] = docs
+                    except Exception as exc:
+                        logger.error(f"Subquery '{sub_q}' generated an exception: {exc}")
+                        retrieval_results.append({
+                            "subquery": sub_q,
+                            "documents": [],
+                            "status": "not_found"
+                        })
+                        subquery_to_docs[sub_q] = []
+                        
+            # Reconstruct in deterministic order to align with subqueries parameter
+            for sub_q in active_subqueries:
+                if sub_q in subquery_to_docs:
+                    ordered_active_subqueries.append(sub_q)
+                    ranked_lists.append(subquery_to_docs[sub_q])
+
+            # Fuse ranked lists using Reciprocal Rank Fusion (RRF)
+            final_docs = self._reciprocal_rank_fusion(ranked_lists, ordered_active_subqueries)
+
+            print(f"[Retrieval Merging] Total merged candidate documents before reranking: {len(final_docs)}")
+            
+            # Print statement for retrieved documents before cross-encoder with scores
+            print(f"[Retrieval Output] Retrieved documents before cross-encoder:")
+            for idx, doc in enumerate(final_docs):
+                print(f"  {idx + 1}. Source: {doc['metadata'].get('source')} (Page {doc['metadata'].get('page_number')}) | Retrieval Score: {doc.get('score', 0.0):.4f} | RRF Score: {doc.get('rrf_score', 0.0):.4f}")
+
+            # Run global reranking on all merged candidate documents against original/sub-queries (with top-1 retrieved protection)
+            protected_hashes = set()
+            for r_list in ranked_lists:
+                if r_list:
+                    top_doc = r_list[0]
+                    h = hashlib.md5(top_doc["content"].strip().encode()).hexdigest()
+                    protected_hashes.add(h)
+            final_docs = self._rerank_documents(query, final_docs, ordered_active_subqueries, protected_hashes=protected_hashes)
+            
+            print(f"[Reranking Scores] Documents after Cross-Encoder reranking:")
+            for idx, doc in enumerate(final_docs):
+                print(f"  {idx + 1}. Source: {doc['metadata'].get('source')} (Page {doc['metadata'].get('page_number')}) | Score: {doc.get('score')} | RRF: {doc.get('rrf_score')}")
+            
+            # Select diverse and coverage-complete contexts
+            final_docs = self._select_diverse_contexts(final_docs, ordered_active_subqueries, limit=5)
+            
+            # Convert subqueries_matched from set to list for JSON serialization compatibility
+            for d in final_docs:
+                if "subqueries_matched" in d and isinstance(d["subqueries_matched"], set):
+                    d["subqueries_matched"] = sorted(list(d["subqueries_matched"]))
+                    
+            print(f"[Retrieval Output] Top {len(final_docs)} documents sent to AnalysisAgent:")
+            for idx, doc in enumerate(final_docs):
+                print(f"  {idx + 1}. Source: {doc['metadata'].get('source')} (Page {doc['metadata'].get('page_number')}) | Score: {doc.get('score')} | RRF: {doc.get('rrf_score')} | Subqueries: {doc.get('subqueries_matched')}")
+
+            logger.info(f"AdvancedRetrievalAgent (MultiHop): Final merged docs count {len(final_docs)}")
+
+            status_str = "Success"
+            log_agent_step(
+                state=state,
+                step_name="AdvancedRetrievalAgent",
+                status=status_str,
+                query=query,
+                retrieved_count=len(final_docs),
+            )
+
+            return {
+                "retrieved_docs": final_docs,
+                "retrieval_results": retrieval_results,
+                "audit_log": [{
+                    "step": "AdvancedRetrievalAgent",
+                    "status": status_str,
+                    "query": query,
+                    "retrieved_count": len(final_docs),
+                }],
+            }
+        except Exception as e:
+            logger.error(f"AdvancedRetrievalAgent Error: {e}")
+            return {
+                "audit_log": [{
+                    "step": "AdvancedRetrievalAgent",
+                    "status": "Error",
+                    "error": str(e),
+                }],
+            }
+
+
+class RetrievalAgent(BaseRetrievalAgent):
+    @traceable(name="Retrieval")
+    def invoke(self, state: AgentState) -> Dict[str, Any]:
+        route = state.get("route", "single_hop")
+        if route == "multi_hop":
+            agent = MultiHopRetrievalAgent(self.vector_store)
+        else:
+            agent = SingleHopRetrievalAgent(self.vector_store)
+        return agent.invoke(state)

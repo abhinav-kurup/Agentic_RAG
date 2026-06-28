@@ -11,7 +11,9 @@ def route_query(state: AgentState) -> str:
     route = state.get("route", "single_hop")
     if route == "conversational":
         return "conversational"
-    return "retrieval"
+    elif route == "multi_hop":
+        return "multi_hop"
+    return "single_hop"
 
 
 def route_after_analysis(state: AgentState):

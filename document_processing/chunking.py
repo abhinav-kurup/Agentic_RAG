@@ -1,3 +1,4 @@
+from langsmith import traceable
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from typing import List, Dict, Any
 import hashlib
@@ -10,10 +11,10 @@ def make_chunk_id(source: str, page_number, chunk_index: int, text: str) -> str:
 
 
 class DocumentChunker:
-    def __init__(self, chunk_size: int = 2000, chunk_overlap: int = 200):
+    def __init__(self, chunk_size: int = 1500, chunk_overlap: int = 180):
         """
         Args:
-            chunk_size: Approx characters per chunk (aiming for ~500 tokens)
+            chunk_size: Approx characters per chunk (aiming for ~200 tokens to fit 256 embedding limit)
             chunk_overlap: Approx characters overlap
         """
         self.splitter = RecursiveCharacterTextSplitter(
@@ -21,6 +22,7 @@ class DocumentChunker:
             chunk_overlap=chunk_overlap,
         )
 
+    @traceable(name="Chunker")
     def split_documents(
         self,
         pages: List[Dict[str, Any]],

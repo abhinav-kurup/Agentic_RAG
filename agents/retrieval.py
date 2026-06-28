@@ -390,7 +390,7 @@ class SingleHopRetrievalAgent(BaseRetrievalAgent):
 
         query = state.get("query", "")
         if not query:
-            return {"audit_log": [{"step": "AdvancedRetrievalAgent", "status": "Skipped"}]}
+            return {"audit_log": [{"step": "SingleHopRetrievalAgent", "status": "Skipped", "reason": "Empty query"}]}
 
         subqueries = state.get("subqueries", [])
         logger.info(f"SingleHopRetrievalAgent: Subqueries -> {subqueries}")
@@ -463,27 +463,31 @@ class SingleHopRetrievalAgent(BaseRetrievalAgent):
             status_str = "Success"
             log_agent_step(
                 state=state,
-                step_name="AdvancedRetrievalAgent",
+                step_name="SingleHopRetrievalAgent",
                 status=status_str,
                 query=query,
+                subqueries=ordered_active_subqueries,
                 retrieved_count=len(final_docs),
+                strategy="single_hop",
             )
 
             return {
                 "retrieved_docs": final_docs,
                 "retrieval_results": retrieval_results,
                 "audit_log": [{
-                    "step": "AdvancedRetrievalAgent",
+                    "step": "SingleHopRetrievalAgent",
                     "status": status_str,
                     "query": query,
+                    "subqueries": ordered_active_subqueries,
                     "retrieved_count": len(final_docs),
+                    "strategy": "single_hop",
                 }],
             }
         except Exception as e:
-            logger.error(f"AdvancedRetrievalAgent Error: {e}")
+            logger.error(f"SingleHopRetrievalAgent Error: {e}")
             return {
                 "audit_log": [{
-                    "step": "AdvancedRetrievalAgent",
+                    "step": "SingleHopRetrievalAgent",
                     "status": "Error",
                     "error": str(e),
                 }],
@@ -497,7 +501,7 @@ class MultiHopRetrievalAgent(BaseRetrievalAgent):
 
         query = state.get("query", "")
         if not query:
-            return {"audit_log": [{"step": "AdvancedRetrievalAgent", "status": "Skipped"}]}
+            return {"audit_log": [{"step": "MultiHopRetrievalAgent", "status": "Skipped", "reason": "Empty query"}]}
 
         subqueries = state.get("subqueries", [])
         logger.info(f"MultiHopRetrievalAgent: Subqueries -> {subqueries}")
@@ -591,27 +595,31 @@ class MultiHopRetrievalAgent(BaseRetrievalAgent):
             status_str = "Success"
             log_agent_step(
                 state=state,
-                step_name="AdvancedRetrievalAgent",
+                step_name="MultiHopRetrievalAgent",
                 status=status_str,
                 query=query,
+                subqueries=ordered_active_subqueries,
                 retrieved_count=len(final_docs),
+                strategy="multi_hop",
             )
 
             return {
                 "retrieved_docs": final_docs,
                 "retrieval_results": retrieval_results,
                 "audit_log": [{
-                    "step": "AdvancedRetrievalAgent",
+                    "step": "MultiHopRetrievalAgent",
                     "status": status_str,
                     "query": query,
+                    "subqueries": ordered_active_subqueries,
                     "retrieved_count": len(final_docs),
+                    "strategy": "multi_hop",
                 }],
             }
         except Exception as e:
-            logger.error(f"AdvancedRetrievalAgent Error: {e}")
+            logger.error(f"MultiHopRetrievalAgent Error: {e}")
             return {
                 "audit_log": [{
-                    "step": "AdvancedRetrievalAgent",
+                    "step": "MultiHopRetrievalAgent",
                     "status": "Error",
                     "error": str(e),
                 }],

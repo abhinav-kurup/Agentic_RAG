@@ -442,7 +442,7 @@ with tab_audit:
 
                             # Desired column order for readability (remove 'query' to avoid repetition;
                             # the full query is already shown above each expander)
-                            desired_cols = ["step", "status", "retrieved_count", "reason", "error", "timestamp"]
+                            desired_cols = ["step", "status", "route", "strategy", "subqueries", "retrieved_count", "reason", "error", "timestamp"]
                             # Build ordered column list: desired first (if present), then remaining
                             ordered_cols = [c for c in desired_cols if c in cols] + [c for c in cols if c not in desired_cols]
 

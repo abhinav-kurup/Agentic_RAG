@@ -1,3 +1,4 @@
+from langsmith import traceable
 from core.state import AgentState
 from core.config import Config
 from typing import Dict, Any
@@ -16,6 +17,7 @@ class LlmResponse(BaseModel):
 
 logger = logging.getLogger(__name__)
 
+@traceable(name="CalculatorToolLangchain")
 @tool
 def calculator(expression: str) -> str:
     """Evaluate a mathematical expression. Use this for all math operations."""
@@ -36,6 +38,7 @@ class AnalysisAgent:
         self.llm = get_llm(model_identifier, temperature=0.2)
         self.tools = [calculator]
 
+    @traceable(name="AnalysisLangchain")
     def invoke(self, state: AgentState) -> Dict[str, Any]:
         dump_agent_state(state, "AnalysisAgent")
 

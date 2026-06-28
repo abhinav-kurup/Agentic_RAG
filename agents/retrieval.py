@@ -75,6 +75,7 @@ class BaseRetrievalAgent:
             )
             self.structured_llm = None
 
+    @traceable(name="ReciprocalRankFusion")
     def _reciprocal_rank_fusion(self, ranked_lists: List[List[Dict]], subqueries: List[str], k: int = 60) -> List[Dict]:
         """Fuses multiple ranked lists of documents using Reciprocal Rank Fusion (RRF), tracking subquery coverage."""
         rrf_scores = {}  # content_hash -> float
@@ -109,6 +110,7 @@ class BaseRetrievalAgent:
         logger.info(f"RRF fused {len(ranked_lists)} lists into {len(fused_docs)} unique documents")
         return fused_docs
 
+    @traceable(name="RerankDocuments")
     def _rerank_documents(self, query: str, docs: List[Dict], subqueries: List[str], protected_hashes: set = None) -> List[Dict]:
         """Reranks the list of documents against the matched subqueries, combines with RRF score, and filters weak candidates."""
         cross_encoder = get_cross_encoder()
@@ -194,6 +196,7 @@ class BaseRetrievalAgent:
             for d in docs
         ]
 
+    @traceable(name="SelectDiverseContexts")
     def _select_diverse_contexts(self, reranked_docs: List[Dict], subqueries: List[str], limit: int = 5) -> List[Dict]:
         """Greedily selects chunks using a soft diversity penalty and coverage bonus, validating evidence completeness."""
         selected = []
@@ -270,6 +273,7 @@ class BaseRetrievalAgent:
         selected.sort(key=lambda x: x.get("score", 0.0), reverse=True)
         return selected
 
+    @traceable(name="RetrieveSingleQuery")
     def _retrieve_single_query(self, query: str, sub_query: str, k: int = 10) -> List[Dict]:
         """Runs the standard retrieval pipeline for a single subquery without reranking."""
         logger.info(f"Retrieving for sub-query: {sub_query}")
@@ -299,6 +303,7 @@ class BaseRetrievalAgent:
             
         return docs[:k]
 
+    @traceable(name="CreateSearchPlan")
     def _create_search_plan(self, query: str) -> SearchPlan:
         """Smart query planning: fallback/legacy helper"""
         if len(query.split()) <= 5:
@@ -317,6 +322,7 @@ class BaseRetrievalAgent:
 
         return SearchPlan(sub_queries=[query])
 
+    @traceable(name="RetrieveDocumentsLegacy")
     def _retrieve_documents(self, query: str, plan: SearchPlan) -> List[Dict]:
         """Retrieval pipeline: legacy helper"""
         all_docs = []

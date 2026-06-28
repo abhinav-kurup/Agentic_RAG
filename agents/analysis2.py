@@ -41,6 +41,7 @@ def get_pydantic_ai_model(model_identifier: str):
         return OllamaModel(model_identifier, base_url=Config.OLLAMA_BASE_URL)
 
 
+@traceable(name="CalculatorTool")
 def calculator(expression: str) -> str:
     """Evaluate a mathematical expression. Use this for all math operations.
     

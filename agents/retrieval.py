@@ -2,6 +2,7 @@ import logging
 import hashlib
 import threading
 from langsmith import traceable
+from langsmith.run_helpers import get_current_run_tree
 from core.config import Config
 from typing import Dict, Any, List
 from pydantic import BaseModel, Field
@@ -273,7 +274,6 @@ class BaseRetrievalAgent:
         selected.sort(key=lambda x: x.get("score", 0.0), reverse=True)
         return selected
 
-    @traceable(name="RetrieveSingleQuery")
     def _retrieve_single_query(self, query: str, sub_query: str, k: int = 10) -> List[Dict]:
         """Runs the standard retrieval pipeline for a single subquery without reranking."""
         logger.info(f"Retrieving for sub-query: {sub_query}")
@@ -401,6 +401,11 @@ class SingleHopRetrievalAgent(BaseRetrievalAgent):
             
             active_queries = subqueries if subqueries else [query]
             k = 8
+
+            # Attach subqueries as metadata on the parent LangSmith trace
+            run = get_current_run_tree()
+            if run:
+                run.metadata = {**(run.metadata or {}), "subqueries": list(active_queries), "strategy": "single_hop"}
             
             print(f"[Retrieval Route] Processing queries: {active_queries} (k={k})")
             ordered_active_subqueries = list(active_queries)
@@ -513,10 +518,15 @@ class MultiHopRetrievalAgent(BaseRetrievalAgent):
 
             # Include original query to ensure broad semantic recall alongside specific subqueries
             active_subqueries = list(set([query] + subqueries))
-            
-            # Adaptive retrieval size (Bug 4 Fix)
+
+            # Adaptive retrieval size
             num_queries = len(active_subqueries)
             k = max(8, min(15, 40 // num_queries))
+
+            # Attach subqueries as metadata on the parent LangSmith trace
+            run = get_current_run_tree()
+            if run:
+                run.metadata = {**(run.metadata or {}), "subqueries": active_subqueries, "strategy": "multi_hop"}
             
             print(f"[Retrieval Route] Multi-hop active subqueries: {active_subqueries} (k={k})")
             

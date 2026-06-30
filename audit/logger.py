@@ -34,7 +34,8 @@ class AuditLogger:
             "timestamp": datetime.now().isoformat(),
             "query": state.get("query"),
             "final_response": state.get("final_response"),
-            "audit_trail": state.get("audit_log", [])
+            "audit_trail": state.get("audit_log", []),
+            "retrieved_docs": state.get("retrieved_docs", [])
         }
         
         try:

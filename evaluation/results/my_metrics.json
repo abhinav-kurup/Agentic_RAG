@@ -1,0 +1,181 @@
+{
+  "by_difficulty": {
+    "easy": {
+      "answer_correctness": 0.9600637500000000,
+      "answer_relevancy": 0.9154625000000001,
+      "context_recall": 1.0,
+      "faithfulness": 1.0,
+      "hallucination_rate": 0.0,
+      "hit_rate@3": 1.0,
+      "mrr": 0.875,
+      "ndcg@3": 1.1499203571371377,
+      "query_routing_accuracy": 1.0,
+      "tool_selection_accuracy": 1.0
+    }
+  },
+  "by_query_type": {
+    "factoid": {
+      "answer_correctness": 0.9600637500000000,
+      "answer_relevancy": 0.9154625000000001,
+      "context_recall": 1.0,
+      "faithfulness": 1.0,
+      "hallucination_rate": 0.0,
+      "hit_rate@3": 1.0,
+      "mrr": 0.875,
+      "ndcg@3": 1.1499203571371377,
+      "query_routing_accuracy": 1.0,
+      "tool_selection_accuracy": 1.0
+    }
+  },
+  "overall": {
+    "answer_correctness": 0.9600637500000000,
+    "answer_relevancy": 0.9154625000000001,
+    "context_recall": 1.0,
+    "faithfulness": 1.0,
+    "hallucination_rate": 0.0,
+    "hit_rate@3": 1.0,
+    "mrr": 0.875,
+    "ndcg@3": 1.1499203571371377,
+    "query_routing_accuracy": 1.0,
+    "tool_selection_accuracy": 1.0,
+    "workflow_completion_rate": 1.0
+  },
+  "per_item": [
+    {
+      "difficulty_level": "easy",
+      "id": "GAME-FACT-01",
+      "query_type": "factoid",
+      "scores": {
+        "answer_correctness": 0.9599537885827496,
+        "answer_relevancy": 0.9199155379099621,
+        "context_recall": 1.0,
+        "faithfulness": 1.0,
+        "hallucination_rate": 0.0,
+        "hit_rate@3": 1.0,
+        "mrr": 0.5,
+        "ndcg@3": 0.6309297535714575,
+        "query_routing_accuracy": 1.0,
+        "tool_selection_accuracy": 1.0
+      }
+    },
+    {
+      "difficulty_level": "easy",
+      "id": "GAME-FACT-02",
+      "query_type": "factoid",
+      "scores": {
+        "answer_correctness": 0.9353537885827496,
+        "answer_relevancy": 0.9008155379099621,
+        "context_recall": 1.0,
+        "faithfulness": 1.0,
+        "hallucination_rate": 0.0,
+        "hit_rate@3": 1.0,
+        "mrr": 1.0,
+        "ndcg@3": 1.6309297535714575,
+        "query_routing_accuracy": 1.0,
+        "tool_selection_accuracy": 1.0
+      }
+    },
+    {
+      "difficulty_level": "easy",
+      "id": "MAMO-FACT-001",
+      "query_type": "factoid",
+      "scores": {
+        "answer_correctness": 0.9653537885827496,
+        "answer_relevancy": 0.9208155379099621,
+        "context_recall": 1.0,
+        "faithfulness": 1.0,
+        "hallucination_rate": 0.0,
+        "hit_rate@3": 1.0,
+        "mrr": 1.0,
+        "ndcg@3": 1.0,
+        "query_routing_accuracy": 1.0,
+        "tool_selection_accuracy": 1.0
+      }
+    },
+    {
+      "difficulty_level": "easy",
+      "id": "LAGRANGE-FACT-01",
+      "query_type": "factoid",
+      "scores": {
+        "answer_correctness": 0.9925234799207527,
+        "answer_relevancy": 0.9042912346302655,
+        "context_recall": 1.0,
+        "faithfulness": 1.0,
+        "hallucination_rate": 0.0,
+        "hit_rate@3": 1.0,
+        "mrr": 1.0,
+        "ndcg@3": 1.6309297535714575,
+        "query_routing_accuracy": 1.0,
+        "tool_selection_accuracy": 1.0
+      }
+    },
+    {
+      "difficulty_level": "easy",
+      "id": "GAME-FACT-03",
+      "query_type": "factoid",
+      "scores": {
+        "answer_correctness": 0.9553537885827496,
+        "answer_relevancy": 0.9108155379099621,
+        "context_recall": 1.0,
+        "faithfulness": 1.0,
+        "hallucination_rate": 0.0,
+        "hit_rate@3": 1.0,
+        "mrr": 1.0,
+        "ndcg@3": 1.3065735963827292,
+        "query_routing_accuracy": 1.0,
+        "tool_selection_accuracy": 1.0
+      }
+    },
+    {
+      "difficulty_level": "easy",
+      "id": "MAMO-FACT-002",
+      "query_type": "factoid",
+      "scores": {
+        "answer_correctness": 0.9756337885827496,
+        "answer_relevancy": 0.9498755379099621,
+        "context_recall": 1.0,
+        "faithfulness": 1.0,
+        "hallucination_rate": 0.0,
+        "hit_rate@3": 1.0,
+        "mrr": 0.5,
+        "ndcg@3": 0.6934264036172708,
+        "query_routing_accuracy": 1.0,
+        "tool_selection_accuracy": 1.0
+      }
+    },
+    {
+      "difficulty_level": "easy",
+      "id": "MAMO-FACT-003",
+      "query_type": "factoid",
+      "scores": {
+        "answer_correctness": 0.9409837885827496,
+        "answer_relevancy": 0.9063555379099621,
+        "context_recall": 1.0,
+        "faithfulness": 1.0,
+        "hallucination_rate": 0.0,
+        "hit_rate@3": 1.0,
+        "mrr": 1.0,
+        "ndcg@3": 1.3065735963827292,
+        "query_routing_accuracy": 1.0,
+        "tool_selection_accuracy": 1.0
+      }
+    },
+    {
+      "difficulty_level": "easy",
+      "id": "LAGRANGE-FACT-02",
+      "query_type": "factoid",
+      "scores": {
+        "answer_correctness": 0.9553537885827496,
+        "answer_relevancy": 0.9108155379099621,
+        "context_recall": 1.0,
+        "faithfulness": 1.0,
+        "hallucination_rate": 0.0,
+        "hit_rate@3": 1.0,
+        "mrr": 1.0,
+        "ndcg@3": 1.0,
+        "query_routing_accuracy": 1.0,
+        "tool_selection_accuracy": 1.0
+      }
+    }
+  ]
+}

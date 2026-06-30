@@ -33,10 +33,9 @@ def get_llm(model_identifier: str, temperature: float = 0.2, timeout: int = 30):
         )
     elif model_identifier.startswith("groq/"):
         model_name = model_identifier.split("groq/")[1]
-        base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
         return ChatGroq(
-            model="llama-3.3-70b-versatile",  # or "llama-3.1-8b-instant"
-            temperature=0
+            model=model_name,
+            temperature=temperature
         )
     else:
         base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")

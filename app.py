@@ -4,6 +4,7 @@ import uuid
 import hashlib
 import logging
 from typing import Optional
+from langsmith import traceable, tracing_context
 
 
 
@@ -37,19 +38,58 @@ def get_tts_engine():
     return TTSEngine()
 
 
-def synthesize_response_audio(text: str, enabled: bool = True) -> Optional[bytes]:
-    if not enabled or not Config.ENABLE_TTS or not text:
-        return None
+def start_background_tts(query_id: str, text: str):
+    import threading
+    from streamlit.runtime.scriptrunner import get_script_run_ctx, add_script_run_ctx
+    ctx = get_script_run_ctx()
+    thread = threading.Thread(
+        target=run_tts_thread,
+        args=(query_id, text, ctx)
+    )
+    if ctx is not None:
+        add_script_run_ctx(thread, ctx)
+    thread.daemon = True
+    thread.start()
+
+
+def run_tts_thread(query_id: str, text: str, ctx):
+    from streamlit.runtime.scriptrunner import RerunData
     try:
-        return get_tts_engine().synthesize_to_wav_bytes(text)
+        logger.info("Background TTS started for query %s", query_id)
+        audio_bytes = get_tts_engine().synthesize_to_wav_bytes(text)
+        
+        # Save to the specific message matching the query_id
+        for msg in st.session_state.messages:
+            if msg.get("query_id") == query_id:
+                msg["audio"] = audio_bytes
+                msg["audio_status"] = "ready"
+                logger.info("Background TTS successfully completed for query %s", query_id)
+                break
+                
+        # Trigger rerun on the script run context
+        if ctx is not None:
+            from streamlit.runtime import Runtime
+            runtime = Runtime.instance()
+            session_info = runtime._session_mgr.get_session_info(ctx.session_id)
+            if session_info is not None:
+                session_info.session.request_rerun(None)
     except Exception as e:
-        logger.error("TTS failed: %s", e)
-        return None
+        logger.error("Background TTS failed for query %s: %s", query_id, e)
+        for msg in st.session_state.messages:
+            if msg.get("query_id") == query_id:
+                msg["audio_status"] = "failed"
+                break
+        if ctx is not None:
+            from streamlit.runtime import Runtime
+            runtime = Runtime.instance()
+            session_info = runtime._session_mgr.get_session_info(ctx.session_id)
+            if session_info is not None:
+                session_info.session.request_rerun(None)
 
 
 def run_documind_query(
-    prompt: str, tts_enabled: bool = True
-) -> tuple[str, dict, Optional[bytes]]:
+    prompt: str
+) -> tuple[str, dict, str]:
     query_id = str(uuid.uuid4())
     try:
         result_state = st.session_state.orchestrator.run(
@@ -65,17 +105,7 @@ def run_documind_query(
         "Please check the Audit Logs for more details."
     )
     st.session_state.audit_logger.log_query(query_id, result_state)
-    audio_bytes = synthesize_response_audio(response, enabled=tts_enabled)
-    return response, result_state, audio_bytes
-
-
-def append_assistant_message(content: str, audio_bytes: Optional[bytes] = None, citations: Optional[list] = None):
-    msg = {"role": "assistant", "content": content}
-    if audio_bytes:
-        msg["audio"] = audio_bytes
-    if citations:
-        msg["citations"] = citations
-    st.session_state.messages.append(msg)
+    return response, result_state, query_id
 
 
 def handle_user_query(prompt: str, tts_enabled: bool = True):
@@ -85,12 +115,29 @@ def handle_user_query(prompt: str, tts_enabled: bool = True):
 
     st.session_state.messages.append({"role": "user", "content": prompt})
 
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
     with st.spinner("Thinking..."):
         try:
-            response, result_state, audio_bytes = run_documind_query(
-                prompt, tts_enabled=tts_enabled
-            )
-            append_assistant_message(response, audio_bytes, citations=result_state.get("citations"))
+            response, result_state, query_id = run_documind_query(prompt)
+            
+            # Start background TTS if enabled
+            audio_status = "none"
+            if tts_enabled and Config.ENABLE_TTS:
+                audio_status = "processing"
+                start_background_tts(query_id, response)
+                
+            # Append assistant message with processing status
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": response,
+                "citations": result_state.get("citations"),
+                "query_id": query_id,
+                "audio_status": audio_status,
+                "audio": None
+            })
+            
             st.session_state.last_sources = {
                 "audit_log": result_state.get("audit_log", []),
                 "retrieved_docs": result_state.get("retrieved_docs", []),
@@ -98,8 +145,59 @@ def handle_user_query(prompt: str, tts_enabled: bool = True):
             st.rerun()
         except Exception as e:
             logger.exception("Query failed")
-            append_assistant_message(f"An error occurred: {e}")
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": f"An error occurred: {e}",
+                "citations": None,
+                "query_id": None,
+                "audio_status": "none",
+                "audio": None
+            })
             st.rerun()
+
+
+@traceable(name="Ingestion Pipeline")
+def ingest_documents(uploaded_files, loader, chunker, vector_store, temp_dir):
+    all_chunks = []
+    existing_sources = vector_store.get_processed_documents()
+
+    for uploaded_file in uploaded_files:
+        st.write(f"Processing {uploaded_file.name}...")
+
+        if uploaded_file.name in existing_sources:
+            st.warning(
+                f"Skipped {uploaded_file.name}: already indexed. "
+                "Delete the document first to re-ingest."
+            )
+            continue
+
+        file_path = os.path.join(temp_dir, uploaded_file.name)
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+
+        try:
+            pages = loader.load(file_path)
+            st.write(f"Loaded {len(pages)} pages from {uploaded_file.name}")
+
+            doc_id = hashlib.sha256(
+                uploaded_file.name.encode()
+            ).hexdigest()[:32]
+            chunks = chunker.split_documents(
+                pages, doc_id, source=uploaded_file.name
+            )
+            for c in chunks:
+                c["metadata"]["source"] = uploaded_file.name
+
+            all_chunks.extend(chunks)
+
+        except Exception as e:
+            st.error(f"Error processing {uploaded_file.name}: {e}")
+
+    if all_chunks:
+        st.write(f"Embedding {len(all_chunks)} chunks...")
+        vector_store.add_chunks(all_chunks)
+        return True
+    return False
 
 
 st.set_page_config(page_title="DocuMind AI", layout="wide", page_icon="📄")
@@ -129,7 +227,7 @@ st.title("📄 DocuMind AI")
 st.markdown("### Intelligent Document Analysis Platform")
 
 
-tab_chat, tab_audit = st.tabs(["💬 Chat", "📊 Audit Logs"])
+tab_chat, tab_audit, tab_metrics = st.tabs(["💬 Chat", "📊 Audit Logs", "📈 Metrics"])
 
 
 with st.sidebar:
@@ -145,73 +243,27 @@ with st.sidebar:
         key=f"uploader_{st.session_state.uploader_key}",
     )
 
-    replace_existing = st.checkbox(
-        "Replace existing documents on re-upload",
-        value=False,
-        help="If the same filename is already indexed, delete the old version before ingesting.",
-    )
-
     if st.button("Process Documents", type="primary"):
         if not uploaded_files:
             st.warning("Please upload files first.")
         else:
             with st.status("Processing documents...", expanded=True) as status:
-                all_chunks = []
                 temp_dir = "data/documents"
                 os.makedirs(temp_dir, exist_ok=True)
-                existing_sources = st.session_state.vector_store.get_processed_documents()
-
-                for uploaded_file in uploaded_files:
-                    st.write(f"Processing {uploaded_file.name}...")
-
-                    if uploaded_file.name in existing_sources:
-                        if replace_existing:
-                            removed = st.session_state.vector_store.delete_by_source(
-                                uploaded_file.name
-                            )
-                            st.write(
-                                f"Replaced existing index for {uploaded_file.name} "
-                                f"({removed} chunks removed)."
-                            )
-                        else:
-                            st.warning(
-                                f"Skipped {uploaded_file.name}: already indexed. "
-                                "Enable 'Replace existing documents' to re-ingest."
-                            )
-                            continue
-
-                    file_path = os.path.join(temp_dir, uploaded_file.name)
-                    with open(file_path, "wb") as f:
-                        f.write(uploaded_file.getbuffer())
-
-                    try:
-                        pages = st.session_state.loader.load(file_path)
-                        st.write(f"Loaded {len(pages)} pages from {uploaded_file.name}")
-
-                        doc_id = hashlib.sha256(
-                            uploaded_file.name.encode()
-                        ).hexdigest()[:32]
-                        chunks = st.session_state.chunker.split_documents(
-                            pages, doc_id, source=uploaded_file.name
-                        )
-                        for c in chunks:
-                            c["metadata"]["source"] = uploaded_file.name
-
-                        all_chunks.extend(chunks)
-
-                    except Exception as e:
-                        st.error(f"Error processing {uploaded_file.name}: {e}")
-
-                if all_chunks:
-                    st.write(f"Embedding {len(all_chunks)} chunks...")
-                    st.session_state.vector_store.add_chunks(all_chunks)
-                    status.update(label="Processing Complete!", state="complete", expanded=False)
-                    st.success(
-                        f"Successfully processed {len(all_chunks)} chunks into Knowledge Base."
+                
+                with tracing_context(parent=False):
+                    success = ingest_documents(
+                        uploaded_files=uploaded_files,
+                        loader=st.session_state.loader,
+                        chunker=st.session_state.chunker,
+                        vector_store=st.session_state.vector_store,
+                        temp_dir=temp_dir
                     )
-
+                
+                if success:
+                    status.update(label="Processing Complete!", state="complete", expanded=False)
+                    st.success("Successfully processed documents into Knowledge Base.")
                     import time
-
                     time.sleep(1.2)
                     st.session_state.uploader_key += 1
                     st.rerun()
@@ -268,16 +320,6 @@ with st.sidebar:
         except Exception as e:
             st.error(f"Failed to clear database: {e}")
 
-    if st.button(
-        "🔧 Repair BM25 Index",
-        help="Rebuild keyword index from Chroma if indexes drifted",
-        use_container_width=True,
-    ):
-        try:
-            count = st.session_state.vector_store.rebuild_bm25_from_chroma()
-            st.success(f"BM25 index repaired ({count} chunks).")
-        except Exception as e:
-            st.error(f"Failed to repair BM25 index: {e}")
 
 
 with tab_chat:
@@ -296,8 +338,11 @@ with tab_chat:
                     except Exception:
                         # fall back to a simple representation if citations have unexpected structure
                         st.write(message.get("citations"))
-                if message.get("audio"):
-                    st.audio(message["audio"], format="audio/wav")
+                if message.get("role") == "assistant":
+                    if message.get("audio_status") == "processing":
+                        st.caption("🔊 *Synthesizing voice...*")
+                    elif message.get("audio"):
+                        st.audio(message["audio"], format="audio/wav")
 
     with chat_container:
         if "last_sources" in st.session_state and st.session_state.last_sources:
@@ -397,13 +442,18 @@ with tab_audit:
 
                             # Desired column order for readability (remove 'query' to avoid repetition;
                             # the full query is already shown above each expander)
-                            desired_cols = ["step", "status", "retrieved_count", "reason", "error", "timestamp"]
+                            desired_cols = ["step", "status", "route", "strategy", "subqueries", "retrieved_count", "reason", "error", "timestamp"]
                             # Build ordered column list: desired first (if present), then remaining
                             ordered_cols = [c for c in desired_cols if c in cols] + [c for c in cols if c not in desired_cols]
 
                             rows = []
                             for item in audit_trail_parsed:
-                                row = {c: item.get(c, "") for c in ordered_cols}
+                                row = {}
+                                for c in ordered_cols:
+                                    val = item.get(c, "")
+                                    row[c] = "" if val is None else str(val)
+                                if "error" in row and len(row["error"]) > 100:
+                                    row["error"] = row["error"][:100] + "..."
                                 rows.append(row)
                             st.table(rows)
                         else:
@@ -427,3 +477,81 @@ with tab_audit:
                                 "snippet": (d.get("content") or d.get("text") or "")[:200] if isinstance(d, dict) else "",
                             })
                         st.table(doc_rows)
+
+
+with tab_metrics:
+    st.header("RAG Evaluation Metrics")
+    
+    metrics_path = os.path.join("evaluation", "results", "my_metrics.json")
+    if not os.path.exists(metrics_path):
+        st.info(f"Metrics file not found at `{metrics_path}`. Please run evaluations first.")
+    else:
+        try:
+            import json
+            import pandas as pd
+            
+            with open(metrics_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                
+            # 1. Final Average Metrics
+            st.subheader("Final Averages")
+            overall = data.get("overall", {})
+            if overall:
+                # Filter out ndc metrics
+                filtered_overall = {k: v for k, v in overall.items() if "ndc" not in k.lower()}
+                
+                # Show key metrics in metric cards
+                col1, col2, col3, col4 = st.columns(4)
+                cols = [col1, col2, col3, col4]
+                col_idx = 0
+                
+                key_metrics = ["answer_correctness", "answer_relevancy", "faithfulness", "context_recall"]
+                for km in key_metrics:
+                    if km in filtered_overall:
+                        val = filtered_overall[km]
+                        display_name = km.replace("_", " ").title()
+                        val_str = f"{val * 100:.2f}%" if isinstance(val, (int, float)) else str(val)
+                        cols[col_idx % 4].metric(display_name, val_str)
+                        col_idx += 1
+                
+                # List all averages in a detailed table
+                avg_rows = []
+                for m_name, m_val in filtered_overall.items():
+                    display_name = m_name.replace("_", " ").title()
+                    val_str = f"{m_val:.4f}" if isinstance(m_val, float) else str(m_val)
+                    avg_rows.append({"Metric": display_name, "Average Score": val_str})
+                    
+                df_avg = pd.DataFrame(avg_rows)
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.table(df_avg)
+            else:
+                st.write("No overall averages available.")
+                
+            st.markdown("---")
+            
+            # 2. Benchmark Query Results (per-item scores)
+            st.subheader("Benchmark Query Results")
+            per_item = data.get("per_item", [])
+            if per_item:
+                query_rows = []
+                for item in per_item:
+                    row = {
+                        "Query ID": item.get("id"),
+                    }
+                    # Add metrics scores, filtering out ndc
+                    scores = item.get("scores", {})
+                    for m_name, m_val in scores.items():
+                        if "ndc" in m_name.lower():
+                            continue
+                        col_name = m_name.replace("_", " ").title()
+                        row[col_name] = round(m_val, 4) if isinstance(m_val, float) else m_val
+                    query_rows.append(row)
+                
+                df_queries = pd.DataFrame(query_rows)
+                st.dataframe(df_queries, width="stretch")
+            else:
+                st.write("No individual query scores available.")
+                
+        except Exception as e:
+            st.error(f"Error loading metrics: {e}")
+

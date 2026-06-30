@@ -1,3 +1,4 @@
+from langsmith import traceable
 import fitz  # PyMuPDF
 from typing import List, Dict, Any, Optional
 import logging
@@ -9,6 +10,7 @@ class PDFLoader:
     def __init__(self):
         pass
 
+    @traceable(name="Loader")
     def load(self, file_path: str) -> List[Dict[str, Any]]:
         """
         Loads a PDF file and extracts content from each page.

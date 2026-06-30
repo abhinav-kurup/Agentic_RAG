@@ -2,6 +2,7 @@ import pickle
 from rank_bm25 import BM25Okapi
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
+from langsmith import traceable
 from typing import List, Dict, Any
 import os
 import logging
@@ -9,7 +10,17 @@ from core.config import Config
 import numpy as np
 import hashlib
 
+import re
+
 logger = logging.getLogger(__name__)
+
+
+def tokenize_text(text: str) -> List[str]:
+    # Lowercase and normalize query alignments (e.g. lagrangian -> lagrange)
+    text = text.lower().replace("lagrangian", "lagrange")
+    # Remove punctuation to ensure words next to punctuation marks are correctly tokenized
+    text = re.sub(r'[^\w\s]', '', text)
+    return text.split()
 
 
 class VectorStoreManager:
@@ -22,13 +33,28 @@ class VectorStoreManager:
 
         logger.info(f"Initializing VectorStore in {persist_directory}")
 
-        self.embedding_function = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+        self.embedding_function = HuggingFaceEmbeddings(model_name=Config.EMBEDDING_MODEL)
 
-        self.vectordb = Chroma(
-            persist_directory=self.persist_directory,
-            embedding_function=self.embedding_function,
-            collection_name=self.collection_name
-        )
+        try:
+            self.vectordb = Chroma(
+                persist_directory=self.persist_directory,
+                embedding_function=self.embedding_function,
+                collection_name=self.collection_name
+            )
+        except Exception as e:
+            logger.warning(f"Chroma DB initialization failed (likely embedding dimension mismatch): {e}. Clearing persist directory and rebuilding...")
+            import shutil
+            if os.path.exists(persist_directory):
+                try:
+                    shutil.rmtree(persist_directory)
+                except Exception as del_err:
+                    logger.error(f"Failed to clear persist directory {persist_directory}: {del_err}")
+            os.makedirs(persist_directory, exist_ok=True)
+            self.vectordb = Chroma(
+                persist_directory=self.persist_directory,
+                embedding_function=self.embedding_function,
+                collection_name=self.collection_name
+            )
 
         self.bm25_corpus_path = os.path.join(self.persist_directory, "bm25_corpus.pkl")
         self._load_bm25()
@@ -44,7 +70,7 @@ class VectorStoreManager:
 
     def _rebuild_bm25_index(self) -> None:
         if self.bm25_corpus:
-            tokenized_corpus = [doc["content"].lower().split() for doc in self.bm25_corpus]
+            tokenized_corpus = [tokenize_text(doc["content"]) for doc in self.bm25_corpus]
             self.bm25 = BM25Okapi(tokenized_corpus)
         else:
             self.bm25 = None
@@ -107,6 +133,7 @@ class VectorStoreManager:
             logger.error(f"Failed to rebuild BM25 from Chroma: {e}")
             raise
 
+    @traceable(name="Vector Store")
     def add_chunks(self, chunks: List[Dict[str, Any]]) -> None:
         if not chunks:
             return
@@ -205,7 +232,7 @@ class VectorStoreManager:
         bm25_results = []
         if self.bm25 and self.bm25_corpus:
             try:
-                tokenized_query = query.lower().split()
+                tokenized_query = tokenize_text(query)
                 scores = self.bm25.get_scores(tokenized_query)
                 top_n = np.argsort(scores)[::-1][:k]
                 for idx in top_n:
@@ -239,6 +266,10 @@ class VectorStoreManager:
             if h not in combined_docs:
                 combined_docs[h] = item
             rrf_scores[h] = rrf_scores.get(h, 0) + 1.0 / (60 + rank)
+
+        # Update the score of each doc to its computed RRF score
+        for h, doc in combined_docs.items():
+            doc["score"] = rrf_scores[h]
 
         ranked_hashes = sorted(rrf_scores.keys(), key=lambda h: rrf_scores[h], reverse=True)
         return [combined_docs[h] for h in ranked_hashes[:k]]

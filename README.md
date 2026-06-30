@@ -1,175 +1,145 @@
-# 📄 DocuMind AI
-
-<div align="center">
+﻿# 📄 DocuMind AI
 
 **Intelligent Document Analysis Platform**
 
-*Chat with your PDFs using Local LLMs powered by Ollama*
-
-[![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.28+-red.svg)](https://streamlit.io/)
-[![LangChain](https://img.shields.io/badge/LangChain-Latest-green.svg)](https://www.langchain.com/)
+[![LangGraph](https://img.shields.io/badge/LangGraph-Latest-green.svg)](https://github.com/langchain-ai/langgraph)
+[![LangSmith](https://img.shields.io/badge/LangSmith-Traced-orange.svg)](https://smith.langchain.com/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-[Features](#-features) • [Demo](#demo) • [Installation](#installation) • [Usage](#usage) • [Tech Stack](#tech-stack)
+---
 
-</div>
+## Overview
+
+DocuMind AI is a multi-agent RAG (Retrieval-Augmented Generation) platform for intelligent conversation with PDF documents. It classifies every query, routes it through a specialised retrieval pipeline, and returns citation-backed answers with a full audit trail.
 
 ---
 
-## 🎯 Overview
+## Architecture
 
-DocuMind AI is a powerful document analysis platform that enables you to have intelligent conversations with your PDF documents. Built on a multi-agent architecture with LangGraph, it provides accurate, citation-backed answers using local LLM inference via Ollama.
+```
+START
+  │
+  ▼
+Planner  ──────────────────────────────► Conversational
+  │
+  ├── single_hop ──► SingleHopRetrievalAgent
+  │                        │
+  └── multi_hop  ──► MultiHopRetrievalAgent
+                           │
+                           ▼
+                       Extraction
+                           │
+                           ▼
+                        Analysis ◄──── Tools (calculator)
+                           │
+                          END
+```
 
-**🔒 Privacy-First:** All processing happens locally - no data leaves your machine!
+### Retrieval Pipeline
 
----
+**Single-hop:** One round of hybrid search → cross-encoder reranking → diversity selection.
 
-## ✨ Features
-
-### 🤖 **Intelligent Query Routing**
-- Automatically classifies queries as document-related or conversational
-- Prevents unnecessary processing for out-of-scope questions
-- LLM-based classification with keyword fallback for robustness
-
-### �️ Speech (STT & TTS)
-- Speech-to-Text (STT): Record voice input and transcribe to text (local or hosted STT engines). See `agents/stt.py` for adapters.
-- Text-to-Speech (TTS): Synthesize assistant replies to audio for browser playback. See `agents/tts.py` for adapters.
-
-### 💬 **Conversational Interface**
-- Clean, modern chat UI built with Streamlit
-- Real-time processing indicators
-- Message history with context preservation
-
-### 🔍 **Advanced Retrieval**
-- Hybrid semantic similarity search using vector embeddings with keyword/BM25 fallbacks
-- Top-k document retrieval (configurable)
-- Context-aware response generation
-
-### � **Source Citations**
-- Every answer includes document references
-- Page numbers for easy verification
-- Expandable source preview with document excerpts
-
-### 🔄 **Multi-Agent Workflow**
-- **Router Agent:** Query classification
-- **Retrieval Agent:** Semantic document search
-- **Extraction Agent:** Structured data extraction
-- **Analysis Agent:** Response synthesis with citations
-
-### 📈 **Audit & Monitoring**
-- Complete query execution trail
-- Step-by-step agent logging
-- JSONL format for easy analysis
-
-### 🎛️ **System Controls**
-- Reset system state
-- Clear vector database
-- Real-time model configuration
+**Multi-hop:** Query decomposed into subqueries → parallel hybrid search per subquery → Reciprocal Rank Fusion (RRF) → cross-encoder reranking → diversity selection + coverage validation.
 
 ---
 
-### Architecture
+## Features
 
-![Workflow Diagram](assets/arch.png)
-
-*High-level state-machine flow: router → retrieval → extraction → analysis with optional tool calls (looping until END).* 
-
----
-
-## Demo
-
-### Updated Screenshots
-The repository images have been refreshed. The three screenshots below illustrate the voice and citation features (these replace the previous demo screenshots):
-
-1) Speech-to-Text (STT)
-
-![Speech to Text](assets/screenshot_stt.png)
-*Shows the voice input / recording UI and live transcription result. This image is marked in the app to indicate where users record a question by voice and see the transcribed text before it is submitted.*
-
-2) Text-to-Speech (TTS)
-
-![Text to Speech](assets/screenshot_tts.png)
-*Demonstrates the TTS playback control for assistant replies. The screenshot highlights the audio player that appears under assistant responses when `Read answers aloud` is enabled.*
-
-3) Citation Display
-
-![Citation Display](assets/screenshot_citation.png)
-*Illustrates how source citations are shown directly below assistant responses (document name and page number). The red-marked area in the image highlights the citations list generated from the retrieval pipeline.*
-
-If you want me to also add the actual image files into `assets/` (using the file names above) please upload them or confirm and I will add placeholders.
-
-### Audit Logs
-
-![System Audit Trail](assets/screenshot_audit.png)
-*Shows the Audit Logs page with per-query expanders and structured tables. The UI is designed for fast debugging and compliance review:* 
-
-- Logs are shown newest-first (latest entries at the top). 
-- Each log is rendered inside an expander titled with timestamp and query id so you can quickly scan recent activity. 
-- Inside each expander you'll find:
-    - The full user query and the assistant's final response. 
-    - An "Audit Steps" table showing the agent-by-agent execution with columns such as step, status, retrieved_count, reason, error and timing. The table intentionally omits the repeated query text to reduce clutter.
-    - A "Retrieved Documents" table showing the source filename, page, score, chunk index and a short snippet for quick verification.
-
-Use the "Refresh Logs" button in the app to reload the latest entries from the log store.
+- **Query planning** — Planner classifies queries as `conversational`, `single_hop`, or `multi_hop` and decomposes multi-hop queries into independent subqueries.
+- **Hybrid retrieval** — BM25 keyword search fused with dense vector search (BAAI/bge-m3 embeddings).
+- **Cross-encoder reranking** — BAAI/bge-reranker-v2-m3 re-scores candidates against the original query.
+- **Diversity selection** — Greedy chunk selection with page/document repetition penalties and subquery coverage bonuses.
+- **Coverage validation** — Guarantees every subquery has at least one supporting chunk before passing context to the LLM.
+- **PydanticAI analysis** — Structured answer generation with confidence score and citations.
+- **Extraction agent** — On-demand structured extraction for queries containing "extract" or "table".
+- **Voice I/O** — Speech-to-text via Whisper (`faster-whisper`), text-to-speech via SpeechT5 (local inference).
+- **LangSmith tracing** — Every agent step decorated with `@traceable` for full pipeline observability.
+- **RAGAS evaluation** — Automated benchmark evaluation with answer correctness, faithfulness, context recall, and relevancy metrics.
+- **Audit logs** — Per-query step trail (agent, status, subqueries, retrieved count) stored as JSONL.
 
 ---
 
-## 🚀 Quick Start
+## Tech Stack
+
+| Component | Technology |
+|---|---|
+| Workflow engine | LangGraph |
+| LLM — Planner | Groq `llama-3.1-8b-instant` |
+| LLM — Retrieval decomposer | Groq `llama-3.1-8b-instant` |
+| LLM — Extraction | Gemini `gemini-2.0-flash-lite` |
+| LLM — Analysis | Groq `llama-3.3-70b-versatile` (PydanticAI) |
+| Embeddings | `BAAI/bge-m3` (sentence-transformers) |
+| Reranker | `BAAI/bge-reranker-v2-m3` (CrossEncoder) |
+| Vector store | ChromaDB |
+| Keyword search | BM25 (rank-bm25) |
+| STT | Whisper via faster-whisper |
+| TTS | microsoft/speecht5_tts + speecht5_hifigan |
+| Observability | LangSmith |
+| Evaluation | RAGAS |
+| UI | Streamlit |
+
+---
+
+## Quick Start
 
 ### Prerequisites
 
-- **Python 3.8+**
-- **Ollama** installed and running ([Download](https://ollama.ai))
-- 8GB+ RAM (16GB recommended)
-- GPU optional (recommended for faster inference)
+- Python 3.9+
+- Groq API key ([get one free](https://console.groq.com/))
+- Google API key for Gemini ([AI Studio](https://aistudio.google.com/))
 
 ### Installation
 
-1. **Clone the repository**
 ```bash
 git clone https://github.com/yourusername/Documind.git
 cd Documind
-```
-
-2. **Install dependencies**
-```bash
 pip install -r requirements.txt
 ```
 
-3. **Set up Ollama**
-```bash
-# Pull the default model
-ollama pull qwen2.5:3b
+### Environment
 
-# Verify Ollama is running
-ollama list
+Copy `.env.example` to `.env` and fill in:
+
+```env
+# LLM providers
+GROQ_API_KEY=your_groq_api_key
+GOOGLE_API_KEY=your_google_api_key
+
+# Per-agent model overrides (optional)
+PLANNER_MODEL=groq/llama-3.1-8b-instant
+RETRIEVAL_MODEL=groq/llama-3.1-8b-instant
+EXTRACTION_MODEL=gemini/gemini-2.0-flash-lite
+ANALYSIS_MODEL=groq/llama-3.3-70b-versatile
+
+# Retrieval
+EMBEDDING_MODEL=BAAI/bge-m3
+CROSS_ENCODER_MODEL=BAAI/bge-reranker-v2-m3
+USE_CROSS_ENCODER=true
+
+# Vector store
+CHROMA_DB_DIR=data/chroma
+
+# Voice
+ENABLE_VOICE=true
+ENABLE_TTS=true
+WHISPER_MODEL=base
+TTS_SPEAKER_INDEX=7306
+
+# LangSmith (optional)
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_API_KEY=your_langsmith_key
+LANGCHAIN_PROJECT=documind
 ```
 
-If you prefer a hosted model provider, you can also configure Groq (or another provider) via environment variables. Example (Groq):
+### Run
 
-```bash
-# Set GROQ_API_KEY in your environment or .env
-export GROQ_API_KEY=your_groq_api_key_here
-# (Windows PowerShell)
-$env:GROQ_API_KEY = "your_groq_api_key_here"
-```
-
-4. **Configure environment** (optional)
-```bash
-cp .env.example .env
-# Edit .env with your settings
-```
-
-5. **Run the application**
 ```bash
 streamlit run app.py
 ```
 
-6. **Open in browser**
-```
-http://localhost:8501
-```
+Open `http://localhost:8501`.
 
 ---
 
@@ -177,166 +147,84 @@ http://localhost:8501
 
 ### Uploading Documents
 
-1. Click **"Upload PDFs"** in the sidebar
+1. Open the sidebar → **Upload PDFs**
 2. Select one or more PDF files
-3. Click **"Process Documents"**
-4. Wait for embedding completion ✅
+3. Click **Process Documents**
+
+Already-indexed files are skipped. Delete a document from the sidebar list before re-uploading to re-ingest it.
 
 ### Asking Questions
 
-**Document-Related Queries:**
 ```
-✅ "What is the revenue mentioned in the report?"
-✅ "Summarize the key findings on page 5"
-✅ "Extract employee distribution data"
-✅ "What percentage increase is shown?"
+"What is the SAC algorithm used for in this paper?"        ← single_hop
+"Compare the architecture of model A and model B"          ← multi_hop
+"Extract the results table from chapter 4"                 ← triggers Extraction agent
+"Hello, how are you?"                                      ← conversational (no retrieval)
 ```
 
-**System Features:**
-- Answers include **source citations** with page numbers
-- Click **"📋 View Sources & Reasoning"** to see retrieved documents
-- Check **"📊 Audit Logs"** tab for execution details
+### Tabs
 
-### Managing Your Knowledge Base
-
-- **Reset System:** Clear memory and reload components
-- **Clear Database:** Delete all documents from vector store
-- **Model:** Displays currently active LLM model
+- **💬 Chat** — Main conversation interface with citations and voice I/O.
+- **📊 Audit Logs** — Per-query execution trail showing every agent step, route, subqueries, and retrieved count.
+- **📈 Metrics** — RAGAS benchmark scores loaded from `evaluation/results/my_metrics.json`.
 
 ---
 
-## Tech Stack
-
-### Core Technologies
-
-| Component | Technology | Purpose |
-|-----------|-----------|---------|
-| **LLM Framework** | LangChain | Orchestration & chains |
-| **Workflow Engine** | LangGraph | Multi-agent state machine |
-| **LLM Backend** | Ollama (local) / Groq (hosted) | Local or hosted LLM inference |
-| **Vector Database** | ChromaDB | Embedding storage & search |
-| **Embeddings** | sentence-transformers | all-MiniLM-L6-v2 model |
-| **PDF Processing** | PyMuPDF | Text extraction |
-| **UI Framework** | Streamlit | Web interface |
-| **Config Management** | python-dotenv | Environment variables |
-
-### Speech Support
-
-- **STT Engines**: Local Whisper adapters or hosted STT services (see `agents/stt.py`).
-- **TTS Engines**: Local TTS adapters (SpeechT5) with browser playback (see `agents/tts.py`).
-
-### Architecture
-
-![Workflow Diagram](assets/screenshot_architecture.svg)
-*High-level state-machine flow: router → retrieval → extraction → analysis with optional tool calls (looping until END).* 
-
----
-
-## ⚙️ Configuration
-
-### Environment Variables
-
-Create a `.env` file in the root directory:
-
-```env
-# Ollama Configuration
-OLLAMA_BASE_URL=http://localhost:11434
-LLM_MODEL=qwen2.5:3b
-
-# Vector Database
-CHROMA_DB_DIR=data/chroma
-
-# Optional: Groq API (if using hosted models)
-GROQ_API_KEY=
-
-# Voice / Speech settings
-ENABLE_VOICE=true
-ENABLE_TTS=true
-```
-
-### Model Selection
-
-Supported Ollama models:
-- `qwen2.5:3b` - **Recommended** (fast, good for CPU)
-- `llama3` - Balanced performance
-- `mistral` - Good accuracy
-- `phi3` - Lightweight
-
-To change models:
-```bash
-ollama pull <model-name>
-# Update LLM_MODEL in .env
-```
-
----
-
-## 📁 Project Structure
+## Project Structure
 
 ```
 Documind/
-├── agents/                  # LangGraph agents
-│   ├── router.py           # Query classification
-│   ├── retrieval2.py       # Hybrid vector search
+├── agents/
+│   ├── planner.py          # Query classification + subquery decomposition
+│   ├── retrieval.py        # BaseRetrievalAgent, SingleHopRetrievalAgent, MultiHopRetrievalAgent
+│   ├── extraction.py       # Structured data extraction (on-demand)
+│   ├── analysis2.py        # PydanticAI answer synthesis with citations
+│   ├── prompt.py           # Centralised prompt definitions
 │   ├── stt.py              # Speech-to-text (Whisper)
-│   ├── tts.py              # Text-to-speech (SpeechT5)
-│   ├── extraction.py       # Data extraction
-│   └── analysis.py         # Response generation
-├── audit/                  # Logging system
-│   └── logger.py           # Query audit trails
-├── core/                   # Core modules
-│   ├── config.py           # Configuration
-│   ├── state.py            # State definitions
-│   └── orchestrator.py     # Workflow orchestrator
-├── document_processing/    # PDF handling
-│   ├── loader.py           # PDF loading
-│   └── chunking.py         # Text chunking
-├── utils/                  # Utility functions
-│   └── helpers.py          # Shared helper functions
-├── vectorstore/            # Vector DB
-│   └── chroma.py           # ChromaDB wrapper
-├── assets/                 # README images
-├── data/                   # Runtime data
-│   ├── chroma/            # Vector database
-│   ├── documents/         # Uploaded PDFs
-│   └── logs/              # Audit logs
-├── app.py                 # Main Streamlit app
-├── requirements.txt       # Dependencies
-└── README.md             # This file
+│   └── tts.py              # Text-to-speech (SpeechT5)
+├── audit/
+│   └── logger.py           # JSONL audit trail writer
+├── core/
+│   ├── config.py           # Environment-based config
+│   ├── conditions.py       # LangGraph routing conditions
+│   ├── llm.py              # LLM factory (Groq, Gemini, Ollama)
+│   ├── orchestrator.py     # LangGraph graph definition
+│   └── state.py            # AgentState TypedDict
+├── document_processing/
+│   ├── loader.py           # PDF text extraction (PyMuPDF)
+│   └── chunking.py         # Document chunking
+├── evaluation/
+│   ├── benchmarks.jsonl    # Ground-truth QA pairs
+│   ├── generate_predictions.py
+│   ├── metrics.py          # RAGAS metric wrappers
+│   ├── runner.py           # Evaluation orchestration
+│   └── results/            # Saved metric outputs
+├── utils/
+│   └── helpers.py          # Shared helpers (log_agent_step, dump_agent_state)
+├── vectorstore/
+│   └── chroma.py           # ChromaDB + BM25 hybrid search
+├── data/
+│   ├── chroma/             # Vector database (auto-created)
+│   ├── documents/          # Uploaded PDFs (auto-created)
+│   └── logs/               # Audit JSONL files (auto-created)
+├── app.py                  # Streamlit application
+└── requirements.txt
 ```
 
 ---
 
-## 🤝 Contributing
+## Evaluation
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Run the RAGAS benchmark suite:
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/CrazyFeature`)
-3. Commit your changes (`git commit -m 'Add some CrazyFeature'`)
-4. Push to the branch (`git push origin feature/CrazyFeature`)
-5. Open a Pull Request
+```bash
+python evaluation/runner.py
+```
 
----
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+Results are saved to `evaluation/results/my_metrics.json` and displayed in the **📈 Metrics** tab.
 
 ---
 
-## 🙏 Acknowledgments
+## License
 
-- [LangChain](https://www.langchain.com/) for the orchestration framework
-- [Ollama](https://ollama.ai/) for local LLM inference
-- [ChromaDB](https://www.trychroma.com/) for vector storage
-- [Streamlit](https://streamlit.io/) for the UI framework
-
----
-
-<div align="center">
-
-**Built with ❤️ using Local LLMs**
-
-*No API keys required • 100% Privacy • Fully Open Source*
-
-</div>
+MIT License — see [LICENSE](LICENSE).

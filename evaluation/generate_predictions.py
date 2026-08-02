@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import List
 
 from core.orchestrator import Orchestrator
-from vectorstore.chroma import VectorStoreManager
+from vectorstore import VectorStoreManager
 from evaluation.schemas import BenchmarkItem, PredictionItem, RetrievedContext
 from evaluation.runner import load_jsonl
 

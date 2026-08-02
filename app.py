@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 try:
     from document_processing.loader import PDFLoader
     from document_processing.chunking import DocumentChunker
-    from vectorstore.chroma import VectorStoreManager
+    from vectorstore import VectorStoreManager
     from core.orchestrator import Orchestrator
     from core.config import Config
     from audit.logger import AuditLogger
@@ -91,12 +91,21 @@ def run_documind_query(
     prompt: str
 ) -> tuple[str, dict, str]:
     query_id = str(uuid.uuid4())
+    
+    # Retrieve active session context
+    from streamlit.runtime.scriptrunner import get_script_run_ctx
+    ctx = get_script_run_ctx()
+    session_id = ctx.session_id if ctx else "default_session"
     try:
-        result_state = st.session_state.orchestrator.run(
-            prompt,
-            query_id=query_id,
-            audit_logger=st.session_state.audit_logger,
+        import asyncio
+        result_state = asyncio.run(
+            st.session_state.orchestrator.arun(
+                prompt,
+                query_id=query_id,
+                session_id=session_id,
+            )
         )
+
     except Exception:
         logger.exception("Orchestrator failed for query: %s", prompt[:120])
         raise
@@ -174,10 +183,9 @@ def ingest_documents(uploaded_files, loader, chunker, vector_store, temp_dir):
         file_path = os.path.join(temp_dir, uploaded_file.name)
         with open(file_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
-
         try:
             pages = loader.load(file_path)
-            st.write(f"Loaded {len(pages)} pages from {uploaded_file.name}")
+            st.write(f"Loaded {len(pages)} layout-parsed pages from {uploaded_file.name}")
 
             doc_id = hashlib.sha256(
                 uploaded_file.name.encode()
@@ -188,16 +196,25 @@ def ingest_documents(uploaded_files, loader, chunker, vector_store, temp_dir):
             for c in chunks:
                 c["metadata"]["source"] = uploaded_file.name
 
+            type_counts = {}
+            for c in chunks:
+                t = c.get("type", "text")
+                type_counts[t] = type_counts.get(t, 0) + 1
+
+            counts_str = ", ".join(f"{count} {t}" for t, count in type_counts.items())
+            st.write(f"Generated {len(chunks)} chunks ({counts_str}) for {uploaded_file.name}")
+
             all_chunks.extend(chunks)
 
         except Exception as e:
             st.error(f"Error processing {uploaded_file.name}: {e}")
 
     if all_chunks:
-        st.write(f"Embedding {len(all_chunks)} chunks...")
+        st.write(f"Storing {len(all_chunks)} chunks into Qdrant & BM25 index...")
         vector_store.add_chunks(all_chunks)
         return True
     return False
+
 
 
 st.set_page_config(page_title="DocuMind AI", layout="wide", page_icon="📄")

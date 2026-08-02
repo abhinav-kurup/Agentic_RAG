@@ -4,11 +4,9 @@ import os
 import time
 
 def log_agent_step(state: AgentState, step_name: str, status: str, **kwargs):
-    """Safely logs an agent step if the logger exists in state."""
-    audit_logger = state.get("audit_logger")
-    query_id = state.get("query_id")
-    if audit_logger and query_id:
-        audit_logger.log_step(query_id, step_name, status, **kwargs)
+    """Safely records an agent step in state audit_log."""
+    if isinstance(state.get("audit_log"), list):
+        state["audit_log"].append({"step": step_name, "status": status, **kwargs})
 
 def dump_agent_state(state: AgentState, agent_name: str, log_dir: str = "data/logs/state_dumps"):
     """Dumps the full AgentState to a JSON file for debugging."""
@@ -16,12 +14,11 @@ def dump_agent_state(state: AgentState, agent_name: str, log_dir: str = "data/lo
     
     safe_state = {}
     for k, v in state.items():
-        if k == "audit_logger":
-            safe_state[k] = "<AuditLogger Object>"
-        elif k == "messages" and v:
+        if k == "messages" and v:
             safe_state[k] = [{"role": getattr(m, "type", "unknown"), "content": getattr(m, "content", "")} for m in v]
         else:
             safe_state[k] = v
+
             
     query_id = state.get("query_id", "unknown_query_id")
     timestamp = str(int(time.time() * 1000))

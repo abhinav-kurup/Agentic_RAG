@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "jetro": {
+      "command": "C:\\Users\\abhin\\.jetro\\runtime\\node-win32-x64.exe",
+      "args": [
+        "C:\\Users\\abhin\\.jetro\\mcp-server\\index.js"
+      ],
+      "env": {
+        "JET_WORKSPACE": "c:\\Users\\abhin\\project\\Documind",
+        "JET_API_URL": "https://api.jetro.ai",
+        "PATH": "C:\\Users\\abhin\\.jetro\\runtime;C:\\Program Files\\Common Files\\Oracle\\Java\\javapath;C:\\Python314\\Scripts\\;C:\\Python314\\;C:\\windows\\system32;C:\\windows;C:\\windows\\System32\\Wbem;C:\\windows\\System32\\WindowsPowerShell\\v1.0\\;C:\\windows\\System32\\OpenSSH\\;C:\\Program Files\\NVIDIA Corporation\\NVIDIA NvDLISR;C:\\MinGW\\bin;C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common;C:\\ProgramData\\chocolatey\\bin;C:\\WINDOWS\\system32;C:\\WINDOWS;C:\\WINDOWS\\System32\\Wbem;C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\;C:\\WINDOWS\\System32\\OpenSSH\\;C:\\Program Files\\PostgreSQL\\15\\bin;C:\\Program Files\\Redis\\;C:\\Program Files\\playit_gg\\bin\\;C:\\Android\\platform-tools;C:\\Android\\scrcpy-win64-v2.0;C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.5\\bin;C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.5\\lib;C:\\Program Files\\CMake\\bin;C:\\Program Files\\Docker\\Docker\\resources\\bin;C:\\Program Files\\NVIDIA Corporation\\Nsight Compute 2024.3.2\\;C:\\tools\\allure-2.34.1\\bin;C:\\Program Files\\Git\\cmd;C:\\Program Files\\Amazon\\AWSCLIV2\\;C:\\Program Files\\Amazon\\SessionManagerPlugin\\bin\\;C:\\Program Files\\nodejs\\;C:\\Users\\abhin\\.local\\bin;C:\\Users\\abhin\\AppData\\Local\\Programs\\Python\\Python314\\Scripts\\;C:\\Users\\abhin\\AppData\\Local\\Programs\\Python\\Python314\\;C:\\Users\\abhin\\AppData\\Local\\Microsoft\\WindowsApps;C:\\Users\\abhin\\AppData\\Local\\Programs\\Microsoft VS Code\\bin;C:\\Users\\abhin\\AppData\\Local\\Google\\Cloud SDK\\google-cloud-sdk\\bin;C:\\Users\\abhin\\AppData\\Local\\Programs\\Python\\Python39;C:\\Users\\abhin\\AppData\\Local\\Programs\\Python\\Python39\\Scripts;C:\\Users\\abhin\\AppData\\Local\\Programs\\MiKTeX\\miktex\\bin\\x64\\;C:\\Users\\abhin\\AppData\\Local\\Programs\\Ollama;C:\\Program Files\\Tesseract-OCR;C:\\Users\\abhin\\AppData\\Local\\Programs\\Antigravity\\bin;C:\\Users\\abhin\\AppData\\Local\\Python\\bin;C:\\Users\\abhin\\AppData\\Roaming\\npm;C:\\Users\\abhin\\AppData\\Local\\Programs\\Antigravity IDE\\bin;C:\\Users\\abhin\\AppData\\Local\\Programs\\cursor\\resources\\app\\bin"
+      }
+    }
+  }
+}

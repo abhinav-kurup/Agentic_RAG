@@ -1,10 +1,9 @@
 streamlit
-chromadb
 langchain
 langchain-community
 langchain-core
 langchain-text-splitters
-langchain-chroma
+
 langchain-huggingface
 langchain-groq
 langchain-google-genai
@@ -23,3 +22,5 @@ faster-whisper
 soundfile
 datasets
 num2words
+qdrant-client
+llama-parse

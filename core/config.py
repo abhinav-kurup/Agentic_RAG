@@ -5,8 +5,13 @@ load_dotenv(override=True)
 
 
 class Config:
-    CHROMA_PERSIST_DIRECTORY = os.getenv("CHROMA_DB_DIR", "data/chroma")
+    PARSER_TYPE = os.getenv("PARSER_TYPE", "pymupdf")  # 'pymupdf' or 'llama_parse'
+    LLAMA_CLOUD_API_KEY = os.getenv("LLAMA_CLOUD_API_KEY")
+    QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+    QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "documind_collection")
+    VISION_MODEL = os.getenv("VISION_MODEL", "gemini/gemini-2.0-flash-lite")
     MODEL_NAME = os.getenv("LLM_MODEL", "qwen2.5:3b")
+
     PLANNER_MODEL = os.getenv("PLANNER_MODEL", "groq/llama-3.3-70b-versatile")
     RETRIEVAL_MODEL = os.getenv("RETRIEVAL_MODEL", "groq/llama-3.1-8b-instant")
     EXTRACTION_MODEL = os.getenv("EXTRACTION_MODEL", "gemini/gemini-2.0-flash-lite")

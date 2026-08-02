@@ -32,21 +32,20 @@ Analyze the user's query and produce an optimal retrieval plan. Do NOT answer th
 Classify the query into exactly one route:
 
 1. conversational
-- Greetings, small talk, thanks, system/help questions, or queries that do NOT require document retrieval.
+- Pure greetings ("hi", "hello", "hey"), chitchat ("how are you"), thanks ("thank you"), or questions directly asking about the assistant's identity ("who are you", "what can you do").
 - Return no subqueries.
 
 2. single_hop
-- The answer can be found from a single concept, section, or document.
+- ANY question asking for facts, concepts, explanations, steps, recommendations, domain topics, or document information (e.g. "How can you protect nature", "What is biodiversity", "Explain ecosystem services").
 - Return exactly one concise retrieval query.
 
 3. multi_hop
-- The answer requires combining multiple independent concepts, sections, or documents.
+- Questions requiring combining multiple independent concepts, comparison across sections, or multi-step reasoning.
 - Return 2-3 focused retrieval queries.
 
 Rules:
-- Any factual question about a document, paper, algorithm, architecture, framework, dataset, module, method, result, or definition is NEVER conversational.
+- ANY informational, educational, or domain topic question (including "how to protect nature", "what is X", "explain Y") MUST be classified as 'single_hop' or 'multi_hop'. NEVER classify topic or how-to questions as 'conversational'.
 - Preserve important technical terms and entity names.
-- Each subquery should target one distinct concept.
 - Keep subqueries concise and retrieval-friendly.
 - Avoid redundant or overlapping queries.
 
@@ -103,7 +102,9 @@ Query: {query}"""
 RETRIEVAL_DECOMPOSER_PROMPT = VersionedPrompt(
     name="retrieval_query_decomposer",
     version="1.0.0",
-    template=PromptTemplate.from_template(RETRIEVAL_DECOMPOSER_PROMPT_TEXT.strip())
+    template=ChatPromptTemplate.from_messages([
+        ("human", RETRIEVAL_DECOMPOSER_PROMPT_TEXT.strip())
+    ])
 )
 
 
@@ -129,62 +130,7 @@ EXTRACTION_PROMPT = VersionedPrompt(
 )
 
 
-# 5. Analysis LangChain Prompt
-ANALYSIS_LANGCHAIN_SYSTEM_PROMPT_TEXT = """You are an intelligent document analysis assistant. 
-Answer the user's query based ONLY on the provided context.
-If the answer is not in the context, state that you don't know.
-You have access to tools. Use them if you need to perform calculations or operations you cannot do reliably yourself.
 
-IMPORTANT RULES:
-- If [Extracted Data] is provided in the context, it contains the exact, pre-processed information the user requested. 
-- You MUST present this extracted data to the user directly and clearly.
-- Do not be overly literal; if the user asks for a "table" and the extracted data is JSON, format that JSON into a beautifully formatted Markdown table.
-- Do not claim information is missing if it is present in the [Extracted Data] section.
-- If the question says to anser in deatils then make sure you provide a detailed answer, if the question says to answer briefly then make sure you provide a concise answer.
--If tools are available and necessary for answering accurately (for example: calculations, transformations, external processing, or other specialized operations), use the appropriate tool instead of reasoning manually.
-
-CITATION RULES:
-- You must cite your sources using the format [Source X (Page Y)].
-- NEVER cite "[Extracted Data]" as a source. If you are using information from the [Extracted Data] block, cite the original document name provided above it in the context.
-OUTPUT FORMAT RULES:
-You MUST return ONLY valid JSON in the following format:
-
-{{
-    "answer": "string",
-    "confidence": float,
-    "citations": ["string"]
-}}
-
-JSON RULES:
-- Do not add any content outside the JSON. Do NOT include markdown, explanations, or extra text.
-- Return ONLY valid JSON. 
-- "answer" must contain the final answer to the user query.
-- "confidence" must be a number between 0 and 1.
-- "citations" must be a list of supporting references used in the answer.
-- If no answer is found in the context, return:
-
-{{
-    "answer": "I don't know based on the provided context.",
-    "confidence": 0.0,
-    "citations": []
-}}
-
-EXAMPLE VALID RESPONSE:
-
-{{
-    "answer": "Cybersecurity protects systems, networks, and data from attacks.",
-    "confidence": 0.92,
-    "citations": ["rag_pdf_6_cyber.pdf (Page 1)"]
-}}
-Context:
-{context_str}
-"""
-
-ANALYSIS_LANGCHAIN_SYSTEM_PROMPT = VersionedPrompt(
-    name="analysis_langchain_system_prompt",
-    version="1.0.0",
-    template=PromptTemplate.from_template(ANALYSIS_LANGCHAIN_SYSTEM_PROMPT_TEXT.strip())
-)
 
 
 # 6. Analysis PydanticAI Prompt

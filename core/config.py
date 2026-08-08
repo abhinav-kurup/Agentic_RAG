@@ -43,3 +43,26 @@ class Config:
     WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
     WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "en") or None
     TTS_SPEAKER_INDEX = int(os.getenv("TTS_SPEAKER_INDEX", "7306"))
+
+    API_HOST = os.getenv("API_HOST", "0.0.0.0")
+    API_PORT = int(os.getenv("API_PORT", "8000"))
+    DOCUMIND_API_URL = os.getenv("DOCUMIND_API_URL", "http://localhost:8000")
+    CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:8501").split(",")
+    DOCUMENTS_DIR = os.getenv("DOCUMENTS_DIR", "data/documents")
+    AUDIO_DIR = os.getenv("AUDIO_DIR", "data/audio")
+    DOCUMENT_REGISTRY_PATH = os.getenv(
+        "DOCUMENT_REGISTRY_PATH", "data/documents_registry.json"
+    )
+
+    # Ingestion worker queue (Redis + RQ)
+    REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6380/0")
+    INGEST_QUEUE_NAME = os.getenv("INGEST_QUEUE_NAME", "documind:ingest")
+    JOBS_DIR = os.getenv("JOBS_DIR", "data/jobs")
+    INGEST_JOB_TIMEOUT_SECONDS = int(os.getenv("INGEST_JOB_TIMEOUT_SECONDS", "3600"))
+
+    # Layout parsing — disable Gemini vision / image blocks when false
+    ENABLE_IMAGE_PROCESSING = os.getenv("ENABLE_IMAGE_PROCESSING", "false").lower() in (
+        "1",
+        "true",
+        "yes",
+    )

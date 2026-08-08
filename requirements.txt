@@ -3,11 +3,13 @@ langchain
 langchain-community
 langchain-core
 langchain-text-splitters
+langchain-ollama
 
 langchain-huggingface
 langchain-groq
 langchain-google-genai
 langgraph
+langsmith
 pymupdf
 rank-bm25
 transformers
@@ -15,6 +17,7 @@ torch
 pandas
 numpy
 pydantic
+pydantic-ai
 sentence-transformers
 python-multipart
 python-dotenv
@@ -23,4 +26,10 @@ soundfile
 datasets
 num2words
 qdrant-client
+fastembed
 llama-parse
+fastapi
+uvicorn[standard]
+httpx
+redis
+rq

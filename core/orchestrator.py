@@ -1,19 +1,25 @@
+import asyncio
+import logging
+import time
+import uuid
+from typing import Optional
+
 from langsmith import traceable
 from langsmith.run_helpers import get_current_run_tree
-import time
-
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
+from langgraph.checkpoint.memory import MemorySaver
+from langchain_core.messages import HumanMessage
+
 from core.state import AgentState
 from agents.planner import PlannerAgent, conversational_reply
 from agents.retrieval import SingleHopRetrievalAgent, MultiHopRetrievalAgent
 from agents.extraction import ExtractionAgent
-# from agents.analysis import AnalysisAgent, calculator
-from agents.analysis2 import AnalysisAgent, calculator
-from vectorstore.chroma import VectorStoreManager
-import logging
-import uuid
+from agents.analysis import AnalysisAgent, calculator
+from agents.query_condenser import QueryContextualizer
+from vectorstore import VectorStoreManager
 from core.conditions import route_query, route_after_analysis
+from utils.helpers import dump_agent_state
 
 logger = logging.getLogger(__name__)
 
@@ -24,27 +30,32 @@ def trace_response(final_response: str, citations: list = None):
 
 
 class Orchestrator:
-    def __init__(self, vector_store: VectorStoreManager = None):
+    def __init__(self, vector_store: VectorStoreManager = None, session_id: str = None):
         if vector_store is None:
             vector_store = VectorStoreManager()
+
+        self.contextualizer = QueryContextualizer() 
         self.planner_agent = PlannerAgent()
         self.single_hop_retrieval_agent = SingleHopRetrievalAgent(vector_store=vector_store)
         self.multi_hop_retrieval_agent = MultiHopRetrievalAgent(vector_store=vector_store)
         self.extraction_agent = ExtractionAgent()
         self.analysis_agent = AnalysisAgent()
         self.tool_node = ToolNode([calculator])
+        self.memory = MemorySaver()
+        self.config = {"configurable": {"thread_id": session_id}}
 
         builder = StateGraph(AgentState)
-
-        builder.add_node("router", self.planner_agent.invoke)
+        builder.add_node("contextualizer", self.contextualizer.ainvoke)
+        builder.add_node("router", self.planner_agent.ainvoke)
         builder.add_node("conversational", conversational_reply)
-        builder.add_node("single_hop_retrieval", self.single_hop_retrieval_agent.invoke)
-        builder.add_node("multi_hop_retrieval", self.multi_hop_retrieval_agent.invoke)
-        builder.add_node("extraction", self.extraction_agent.invoke)
-        builder.add_node("analysis", self.analysis_agent.invoke)
+        builder.add_node("single_hop_retrieval", self.single_hop_retrieval_agent.ainvoke)
+        builder.add_node("multi_hop_retrieval", self.multi_hop_retrieval_agent.ainvoke)
+        builder.add_node("extraction", self.extraction_agent.ainvoke)
+        builder.add_node("analysis", self.analysis_agent.ainvoke)
         builder.add_node("tools", self.tool_node)
 
-        builder.set_entry_point("router")
+        builder.set_entry_point("contextualizer")
+        builder.add_edge("contextualizer", "router")
 
         builder.add_conditional_edges(
             "router",
@@ -71,18 +82,22 @@ class Orchestrator:
         )
         builder.add_edge("tools", "analysis")
 
-        self.workflow = builder.compile()
+        self.workflow = builder.compile(checkpointer=self.memory)
 
-    @traceable(name="RAG Pipeline")
-    def run(self, query: str, query_id: str = None, audit_logger=None) -> AgentState:
+    @traceable(name="RAG Pipeline (Async)")
+    async def arun(self, query: str, query_id: str = None, session_id: str = None) -> AgentState:
         query_id = query_id or str(uuid.uuid4())
         start_time = time.time()
 
+        config = {"configurable": {"thread_id": session_id or "default_session"}}
+
         initial_state = {
             "query": query,
+            "standalone_query": None,
             "query_id": query_id,
-            "audit_logger": audit_logger,
-            "messages": [],
+            "summary": None,
+
+            "messages": [HumanMessage(content=query)],   
             "retrieved_docs": [],
             "subqueries": [],
             "retrieval_results": [],
@@ -92,16 +107,15 @@ class Orchestrator:
             "audit_log": [{"step": "Orchestrator", "status": "Start", "query": query}],
         }
 
-        logger.info("Starting workflow for query: %s", query)
+        logger.info("Starting async workflow for query: %s", query)
         try:
-            result = self.workflow.invoke(initial_state)
+            result = await self.workflow.ainvoke(initial_state, config)
             trace_response(result.get("final_response"), result.get("citations"))
         except Exception:
             logger.exception("Workflow failed for query: %s", query)
             raise
-        logger.info("Workflow completed")
+        logger.info("Async workflow completed")
 
-        from utils.helpers import dump_agent_state
         dump_agent_state(result, "FinalOutput")
 
         latency = time.time() - start_time
@@ -124,3 +138,8 @@ class Orchestrator:
             run_tree.metadata.update(metadata)
 
         return result
+
+    @traceable(name="RAG Pipeline")
+    def run(self, query: str, query_id: str = None, session_id: str = None) -> AgentState:
+        """Synchronous wrapper around arun for backwards compatibility."""
+        return asyncio.run(self.arun(query, query_id=query_id, session_id=session_id))

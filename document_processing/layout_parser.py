@@ -1,0 +1,180 @@
+import os
+import json
+import time
+import datetime
+import fitz  # PyMuPDF (used solely for image extraction)
+import logging
+import re
+from typing import List, Dict, Any, Optional
+
+from core.config import Config
+from document_processing.image_describer import ImageDescriber
+
+logger = logging.getLogger(__name__)
+
+
+class PDFLayoutParser:
+    """
+    LlamaParse Document Layout Parser.
+    Converts PDF pages directly to structured Markdown using LlamaParse,
+    enriches visual figures/charts using Gemini LLM Vision descriptions,
+    saves images locally for retrieval agents, and generates parsing statistics in JSON.
+    """
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        image_describer: Optional[ImageDescriber] = None,
+    ):
+        self.api_key = api_key or getattr(Config, "LLAMA_CLOUD_API_KEY", None) or os.getenv("LLAMA_CLOUD_API_KEY")
+        self.image_describer = image_describer or ImageDescriber()
+
+    def parse_document(self, file_path: str) -> List[Dict[str, Any]]:
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        source_name = os.path.basename(file_path)
+
+        logger.info(f"Parsing document '{source_name}' using LlamaParse...")
+        from llama_parse import LlamaParse
+
+        parser = LlamaParse(
+            api_key=self.api_key,
+            result_type="markdown",
+            verbose=False,
+        )
+        documents = parser.load_data(file_path)
+        logger.info(f"LlamaParse successfully parsed {len(documents)} pages for '{source_name}'")
+
+        return self._process_llama_documents(documents, file_path, source_name)
+
+    def _process_llama_documents(
+        self, documents: List[Any], file_path: str, source_name: str
+    ) -> List[Dict[str, Any]]:
+        """Processes LlamaParse markdown pages, enriches them with extracted image descriptions, and saves stats JSON."""
+        clean_name = os.path.splitext(source_name)[0]
+
+        # Directory setup
+        markdown_dir = os.path.join("data", "parsed_markdown")
+        stats_dir = os.path.join("data", "parsing_stats")
+        os.makedirs(markdown_dir, exist_ok=True)
+        os.makedirs(stats_dir, exist_ok=True)
+
+        saved_md_path = os.path.join(markdown_dir, f"{clean_name}.md")
+        saved_stats_path = os.path.join(stats_dir, f"{clean_name}_stats.json")
+
+        processed_pages = []
+        full_doc_md_parts = []
+        
+        # Statistics Tracking
+        total_tables = 0
+        total_images = 0
+        image_details = []
+        table_details = []
+
+        doc = fitz.open(file_path)
+
+        for page_idx, llama_doc in enumerate(documents):
+            page_num = page_idx + 1
+            blocks = []
+            page_md = getattr(llama_doc, "text", str(llama_doc))
+            full_doc_md_parts.append(f"<!-- Page {page_num} -->\n{page_md}\n")
+
+            print(f"\n==================== LLAMAPARSE RESULT (Page {page_num}/{len(documents)}) ====================")
+            print(page_md[:800] + ("\n... [truncated]" if len(page_md) > 800 else ""))
+            print("=================================================================================\n")
+
+            # Detect tables in Markdown output (regex for Markdown table rows)
+            table_matches = re.findall(r"(\|[^\n]+\|\n\|[-:| ]+\|\n(?:\|[^\n]+\|\n?)+)", page_md)
+            if table_matches:
+                total_tables += len(table_matches)
+                for tbl_idx, tbl_str in enumerate(table_matches):
+                    table_details.append({
+                        "page_number": page_num,
+                        "table_index": tbl_idx + 1,
+                        "preview": tbl_str[:200] + "...",
+                    })
+
+            # Add LlamaParse Markdown block
+            blocks.append({
+                "type": "text",
+                "content": page_md,
+            })
+
+            # Extract embedded images from page for LLM Vision description & local disk storage
+            if page_idx < len(doc):
+                fitz_page = doc[page_idx]
+                image_list = fitz_page.get_images(full=True)
+                for img_idx, img_info in enumerate(image_list):
+                    xref = img_info[0]
+                    try:
+                        base_image = doc.extract_image(xref)
+                        image_bytes = base_image.get("image")
+                        if not image_bytes or len(image_bytes) < 1000:
+                            continue
+
+                        img_result = self.image_describer.describe_image(
+                            image_bytes=image_bytes,
+                            page_number=page_num,
+                            img_index=img_idx,
+                            source_name=source_name,
+                        )
+
+                        total_images += 1
+                        image_details.append({
+                            "page_number": page_num,
+                            "image_index": img_idx + 1,
+                            "image_path": img_result["image_path"],
+                            "description": img_result["description"],
+                        })
+
+                        blocks.append({
+                            "type": "image",
+                            "content": img_result["description"],
+                            "image_path": img_result["image_path"],
+                            "image_index": img_idx,
+                        })
+                    except Exception as img_err:
+                        logger.warning(f"Image extraction error on LlamaParse page {page_num}: {img_err}")
+
+            processed_pages.append({
+                "page_number": page_num,
+                "text": page_md,
+                "blocks": blocks,
+                "metadata": doc.metadata or {},
+            })
+
+        doc.close()
+
+        # Write complete document markdown to disk
+        try:
+            with open(saved_md_path, "w", encoding="utf-8") as md_file:
+                md_file.write("\n\n".join(full_doc_md_parts))
+            logger.info(f"Saved complete LlamaParse Markdown to disk at: {saved_md_path}")
+            print(f"--> Saved complete LlamaParse Markdown file: {saved_md_path}")
+        except Exception as save_err:
+            logger.warning(f"Could not save LlamaParse markdown file to disk: {save_err}")
+
+        # Write Parsing Statistics JSON to disk
+        parsing_stats = {
+            "document_name": source_name,
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "total_pages": len(documents),
+            "total_text_blocks": len(documents),
+            "total_tables": total_tables,
+            "total_images": total_images,
+            "markdown_file": saved_md_path,
+            "table_details": table_details,
+            "image_details": image_details,
+        }
+
+        try:
+            with open(saved_stats_path, "w", encoding="utf-8") as json_file:
+                json.dump(parsing_stats, json_file, indent=2)
+            logger.info(f"Saved parsing statistics JSON to disk at: {saved_stats_path}")
+            print(f"--> Saved parsing statistics JSON file: {saved_stats_path}")
+            print(f"    [Stats Summary: {len(documents)} pages, {total_tables} tables, {total_images} images saved locally]")
+        except Exception as stats_err:
+            logger.warning(f"Could not save parsing statistics JSON: {stats_err}")
+
+        return processed_pages

@@ -1,26 +1,49 @@
+import asyncio
+import logging
 from langsmith import traceable
+from typing import Dict, Any, List
+from pydantic import BaseModel, Field
+from pydantic_ai import Agent, RunContext
+from pydantic_ai.models.gemini import GeminiModel
+from pydantic_ai.models.google import GoogleModel
+from pydantic_ai.models.groq import GroqModel
+from pydantic_ai.models.ollama import OllamaModel
+from langchain_core.messages import AIMessage
+from core.llm import get_llm
 from core.state import AgentState
 from core.config import Config
-from typing import Dict, Any
-import logging
-from langchain_core.messages import SystemMessage, HumanMessage
 from utils.helpers import log_agent_step, dump_agent_state
-from langchain_core.tools import tool
-from pydantic import BaseModel
-import json
-
-class LlmResponse(BaseModel):
-    content : str
-    confidence  : float
-
-
 
 logger = logging.getLogger(__name__)
 
-@traceable(name="CalculatorToolLangchain")
-@tool
+
+class AnalysisResult(BaseModel):
+    answer: str = Field(description="The final answer to the user query based on the context.")
+    confidence: float = Field(description="Confidence score between 0.0 and 1.0.")
+    citations: List[str] = Field(default_factory=list, description="Citations format: [Source X (Page Y)].")
+
+
+def get_pydantic_ai_model(model_identifier: str):
+    if model_identifier.startswith("gemini/"):
+        model_name = model_identifier.split("gemini/")[1]
+        return GeminiModel(model_name)
+    elif model_identifier.startswith("groq/"):
+        model_name = model_identifier.split("groq/")[1]
+        return GroqModel(model_name)
+    elif model_identifier.startswith("ollama/"):
+        model_name = model_identifier.split("ollama/")[1]
+        return OllamaModel(model_name, base_url=Config.OLLAMA_BASE_URL)
+    else:
+        return OllamaModel(model_identifier, base_url=Config.OLLAMA_BASE_URL)
+
+
+@traceable(name="CalculatorTool")
 def calculator(expression: str) -> str:
-    """Evaluate a mathematical expression. Use this for all math operations."""
+    """Evaluate a mathematical expression. Use this for all math operations.
+    
+    Args:
+        expression: The math expression to evaluate, e.g. '2 + 2' or 'math.sqrt(16)'.
+    """
     try:
         logger.info(f"ToolCalling for expression: {expression}")
         allowed_names = {"abs": abs, "round": round, "min": min, "max": max}
@@ -30,24 +53,32 @@ def calculator(expression: str) -> str:
     except Exception as e:
         return f"Error evaluating expression: {e}"
 
+
 class AnalysisAgent:
-    def __init__(self, model_identifier: str = None):
-        from core.llm import get_llm
-        model_identifier = model_identifier or Config.MODEL_NAME
+    """Synthesizes structured final answers with citations asynchronously using PydanticAI."""
+
+    def __init__(self):
+        model_identifier = Config.ANALYSIS_MODEL
         logger.info(f"AnalysisAgent initialized with Model: {model_identifier}")
-        self.llm = get_llm(model_identifier, temperature=0.2)
-        self.tools = [calculator]
+        
+        self.model = get_pydantic_ai_model(model_identifier)
+        from agents.prompt import ANALYSIS_PYDANTIC_AI_SYSTEM_PROMPT
+        self.agent = Agent(
+            self.model,
+            output_type=AnalysisResult,
+            system_prompt=ANALYSIS_PYDANTIC_AI_SYSTEM_PROMPT.format(),
+            retries=3,
+        )
+        self.agent.tool_plain(calculator)
 
-    @traceable(name="AnalysisLangchain")
-    def invoke(self, state: AgentState) -> Dict[str, Any]:
+    @traceable(name="Analysis")
+    async def ainvoke(self, state: AgentState) -> Dict[str, Any]:
         dump_agent_state(state, "AnalysisAgent")
-
         logger.info("AnalysisAgent: Process started")
-        query = state.get("query", "")
+        
+        query = state.get("standalone_query") or state.get("query", "")
         docs = state.get("retrieved_docs", [])
         extracted = state.get("extracted_data", {}).get("content", "")
-        print("EEEEEEEEEEEEEEEEEEEEE:", docs)
-        messages = state.get("messages", [])
         
         context_parts = []
         for i, doc in enumerate(docs):
@@ -57,77 +88,66 @@ class AnalysisAgent:
             context_parts.append(f"[{source}]: {doc.get('content', '')}")
             
         context_str = "\n\n".join(context_parts)
-        
         if extracted:
             context_str += f"\n\n[Extracted Data]:\n{extracted}"
 
-        from agents.prompt import ANALYSIS_LANGCHAIN_SYSTEM_PROMPT
-        system_prompt = ANALYSIS_LANGCHAIN_SYSTEM_PROMPT.format(context_str=context_str)
+        user_prompt = f"Context:\n{context_str}\n\nQuery: {query}"
 
         try:
-            llm_with_tools = self.llm.bind_tools(self.tools)
-        except Exception as e:
-            err = repr(e)
-            logger.exception("AnalysisAgent bind_tools failed: %s", err)
-            log_agent_step(
-                state=state,
-                step_name="AnalysisAgent",
-                status="ERROR",
-                error=err
-            )
-            llm_with_tools = self.llm
-        try:
-            logger.info("AnalysisAgent: Invoking LLM for generation...")
-            if not messages:
-                user_msg = HumanMessage(content=query)
-                input_messages = [SystemMessage(content=system_prompt), user_msg]
-                response = llm_with_tools.invoke(input_messages)
-                new_messages = [user_msg, response]
-            else:
-                input_messages = [SystemMessage(content=system_prompt)] + messages
-                response = llm_with_tools.invoke(input_messages)
-                new_messages = [response]
+            logger.info("AnalysisAgent: Invoking PydanticAI Agent asynchronously...")
+            response = await self.agent.run(user_prompt, max_retries=3)
+
             
-            logger.info("AnalysisAgent: Generation successful")
+            result: AnalysisResult = response.output
+            logger.info(f"AnalysisAgent: Generation successful (Confidence: {result.confidence:.2f})")
+            log_agent_step(state, "AnalysisAgent", "Success")
             
-            result_dict = {"messages": new_messages}
-            
-            if not response.tool_calls:
-                print("LLM RESPONSE CONTENT:", response.content)
-                parsed = json.loads(response.content)
-                print("PARSED RESPONSE:", parsed)
-                result_dict["final_response"] = parsed.get("answer", "")
-                result_dict["citations"] = parsed.get("citations", [])
-                log_agent_step(state, "AnalysisAgent", "Success", response_length=len(response.content))
-                result_dict["audit_log"] = [{
+            return {
+                "final_response": result.answer,
+                "messages": [AIMessage(content=result.answer)],
+                "citations": result.citations,
+                "audit_log": [{
                     "step": "AnalysisAgent", 
                     "status": "Success", 
-                    "response_length": len(response.content)
+                    "confidence": result.confidence
                 }]
-            else:
-                log_agent_step(state, "AnalysisAgent", "ToolCall", tool_calls=len(response.tool_calls))
-                result_dict["audit_log"] = [{
-                    "step": "AnalysisAgent", 
-                    "status": "ToolCall", 
-                    "tool_calls": [t["name"] for t in response.tool_calls]
-                }]
-            
-            return result_dict
+            }
             
         except Exception as e:
             err = repr(e)
-            logger.exception("AnalysisAgent generation failed: %s", err)
-            log_agent_step(state, "AnalysisAgent", "Error", error=err, phase="invoke")
-            return {
-                "final_response": (
-                    "I apologize, but I encountered a system issue while analyzing "
-                    "the documents. Please check the Audit Logs or verify the AI "
-                    "model is correctly configured."
-                ),
-                "audit_log": [{
-                    "step": "AnalysisAgent",
-                    "status": "Error",
-                    "error": err,
-                    "phase": "invoke",
-                }],
-            }
+            logger.warning("AnalysisAgent primary PydanticAI run failed (%s). Executing direct LLM fallback...", err)
+            try:
+                fallback_llm = get_llm(Config.ANALYSIS_MODEL, temperature=0.1)
+                fallback_resp = await fallback_llm.ainvoke(
+                    f"Based on the following context, answer the user query clearly and accurately:\n\n{user_prompt}"
+                )
+                answer_text = getattr(fallback_resp, "content", str(fallback_resp)).strip()
+                log_agent_step(state, "AnalysisAgent", "Success", method="fallback")
+                return {
+                    "final_response": answer_text,
+                    "messages": [AIMessage(content=answer_text)],
+                    "citations": [],
+                    "audit_log": [{
+                        "step": "AnalysisAgent",
+                        "status": "Success",
+                        "method": "fallback"
+                    }]
+                }
+            except Exception as fallback_err:
+                logger.exception("AnalysisAgent fallback generation also failed: %s", fallback_err)
+                return {
+                    "final_response": (
+                        "I apologize, but I encountered an issue synthesizing the final response. "
+                        "Please verify your query or try rephrasing."
+                    ),
+                    "audit_log": [{
+                        "step": "AnalysisAgent",
+                        "status": "Error",
+                        "error": repr(fallback_err),
+                        "phase": "invoke",
+                    }],
+                }
+
+
+    def invoke(self, state: AgentState) -> Dict[str, Any]:
+        return asyncio.run(self.ainvoke(state))

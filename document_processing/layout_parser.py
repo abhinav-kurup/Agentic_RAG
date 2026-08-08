@@ -72,7 +72,7 @@ class PDFLayoutParser:
         image_details = []
         table_details = []
 
-        doc = fitz.open(file_path)
+        doc = fitz.open(file_path) if Config.ENABLE_IMAGE_PROCESSING else None
 
         for page_idx, llama_doc in enumerate(documents):
             page_num = page_idx + 1
@@ -101,8 +101,8 @@ class PDFLayoutParser:
                 "content": page_md,
             })
 
-            # Extract embedded images from page for LLM Vision description & local disk storage
-            if page_idx < len(doc):
+            # Extract embedded images (optional — gated by ENABLE_IMAGE_PROCESSING)
+            if Config.ENABLE_IMAGE_PROCESSING and doc is not None and page_idx < len(doc):
                 fitz_page = doc[page_idx]
                 image_list = fitz_page.get_images(full=True)
                 for img_idx, img_info in enumerate(image_list):
@@ -141,10 +141,11 @@ class PDFLayoutParser:
                 "page_number": page_num,
                 "text": page_md,
                 "blocks": blocks,
-                "metadata": doc.metadata or {},
+                "metadata": (doc.metadata if doc else {}) or {},
             })
 
-        doc.close()
+        if doc is not None:
+            doc.close()
 
         # Write complete document markdown to disk
         try:

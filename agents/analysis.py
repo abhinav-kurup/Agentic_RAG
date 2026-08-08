@@ -4,10 +4,10 @@ from langsmith import traceable
 from typing import Dict, Any, List
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext
-from pydantic_ai.models.gemini import GeminiModel
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.models.groq import GroqModel
 from pydantic_ai.models.ollama import OllamaModel
+from pydantic_ai.providers.ollama import OllamaProvider
 from langchain_core.messages import AIMessage
 from core.llm import get_llm
 from core.state import AgentState
@@ -26,15 +26,21 @@ class AnalysisResult(BaseModel):
 def get_pydantic_ai_model(model_identifier: str):
     if model_identifier.startswith("gemini/"):
         model_name = model_identifier.split("gemini/")[1]
-        return GeminiModel(model_name)
+        return GoogleModel(model_name)
     elif model_identifier.startswith("groq/"):
         model_name = model_identifier.split("groq/")[1]
         return GroqModel(model_name)
     elif model_identifier.startswith("ollama/"):
         model_name = model_identifier.split("ollama/")[1]
-        return OllamaModel(model_name, base_url=Config.OLLAMA_BASE_URL)
+        return OllamaModel(
+            model_name,
+            provider=OllamaProvider(base_url=Config.OLLAMA_BASE_URL),
+        )
     else:
-        return OllamaModel(model_identifier, base_url=Config.OLLAMA_BASE_URL)
+        return OllamaModel(
+            model_identifier,
+            provider=OllamaProvider(base_url=Config.OLLAMA_BASE_URL),
+        )
 
 
 @traceable(name="CalculatorTool")
@@ -95,7 +101,7 @@ class AnalysisAgent:
 
         try:
             logger.info("AnalysisAgent: Invoking PydanticAI Agent asynchronously...")
-            response = await self.agent.run(user_prompt, max_retries=3)
+            response = await self.agent.run(user_prompt)
 
             
             result: AnalysisResult = response.output

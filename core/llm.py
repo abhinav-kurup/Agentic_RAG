@@ -1,4 +1,4 @@
-from langchain_community.chat_models import ChatOllama
+from langchain_ollama import ChatOllama
 from langchain_groq import ChatGroq
 import os
 

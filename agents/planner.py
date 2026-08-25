@@ -50,6 +50,7 @@ class PlannerAgent:
 
         query = state.get("standalone_query") or state.get("query", "")
         query = query.strip()
+        raw_query = (state.get("query") or "").strip()
         if not query:
             return {
                 "route": "conversational",
@@ -58,6 +59,27 @@ class PlannerAgent:
                     "step": "PlannerAgent",
                     "status": "Skipped",
                     "reason": "Empty query"
+                }]
+            }
+
+        if self._is_session_meta(raw_query) or self._is_session_meta(query):
+            log_agent_step(
+                state=state,
+                step_name="PlannerAgent",
+                status="Success",
+                route="conversational",
+                subqueries=[],
+                method="session_meta",
+            )
+            return {
+                "route": "conversational",
+                "subqueries": [],
+                "audit_log": [{
+                    "step": "PlannerAgent",
+                    "status": "Success",
+                    "route": "conversational",
+                    "subqueries": [],
+                    "method": "session_meta",
                 }]
             }
 
@@ -81,6 +103,15 @@ class PlannerAgent:
             route = route.lower().strip()
             if route not in ["conversational", "single_hop", "multi_hop"]:
                 route = "single_hop"
+
+            if route == "conversational" and not (
+                self._is_session_meta(raw_query)
+                or self._is_session_meta(query)
+                or self._is_greeting(raw_query)
+                or self._is_greeting(query)
+            ):
+                route = "single_hop"
+                subqueries = [query]
 
             if route == "conversational":
                 subqueries = []
@@ -128,39 +159,101 @@ class PlannerAgent:
         return asyncio.run(self.ainvoke(state))
 
     def _fallback_classification(self, query: str) -> str:
-        query_lower = query.lower().strip()
-        greetings = ['hello', 'hi', 'hey', 'thanks', 'thank you', 'bye', 'who are you', 'what can you do']
-        if query_lower in greetings or any(query_lower == g for g in greetings):
+        if self._is_session_meta(query) or self._is_greeting(query):
             return "conversational"
         return "single_hop"
 
+    @staticmethod
+    def _is_greeting(query: str) -> bool:
+        q = (query or "").lower().strip().rstrip("!.")
+        return q in (
+            "hello",
+            "hi",
+            "hey",
+            "thanks",
+            "thank you",
+            "bye",
+            "goodbye",
+            "who are you",
+            "what can you do",
+        )
+
+    @staticmethod
+    def _is_session_meta(query: str) -> bool:
+        q = (query or "").lower()
+        needles = (
+            "how many question",
+            "how many questions",
+            "questions have i asked",
+            "questions asked",
+            "what did i just ask",
+            "what did i ask",
+            "my last question",
+            "last question i",
+            "summarize our conversation",
+            "summarise our conversation",
+            "what have we talked",
+            "what have we discussed",
+        )
+        return any(n in q for n in needles)
+
 
 async def conversational_reply(state: AgentState) -> Dict[str, Any]:
-    """Generates a friendly dynamic response for conversational queries asynchronously."""
+    """Answers greetings and questions about this chat session."""
     dump_agent_state(state, "ConversationalReplyNode")
-    query = state.get("query", "")
+    query = state.get("standalone_query") or state.get("query", "")
+    messages = state.get("messages") or []
+    user_turns = [
+        m for m in messages
+        if getattr(m, "type", "") in ("human", "user")
+    ]
+    question_count = len(user_turns)
+    history_lines = []
+    for msg in messages[-16:]:
+        content = (getattr(msg, "content", None) or "").replace("\n", " ")[:280]
+        history_lines.append(f"{getattr(msg, 'type', 'msg')}: {content}")
+    history_text = "\n".join(history_lines) or "(no prior turns)"
 
     from core.llm import get_llm
-    llm = get_llm(Config.PLANNER_MODEL, temperature=0.7)
-    
+    llm = get_llm(Config.PLANNER_MODEL, temperature=0.2)
+
     try:
         response = await llm.ainvoke(
-            f"You are DocuMind AI, a helpful document analysis assistant. "
-            f"Respond warmly and concisely to this user greeting: '{query}'"
+            "You are DocuMind AI. Answer greetings and questions about THIS chat "
+            "session only. Do not define terms, people, or topics from general "
+            "knowledge, and do not use uploaded PDFs.\n"
+            f"User questions in this session (including this one): {question_count}\n"
+            f"Recent transcript:\n{history_text}\n\n"
+            f"User said: {query}\n\n"
+            "If they asked how many questions were asked, the count is "
+            f"{question_count}. Do not call them a new or first user. "
+            "Be concise."
         )
         content = getattr(response, "content", str(response))
     except Exception as e:
-        logger.error(f"ConversationalReplyNode LLM error: {e}")
-        content = (
-            "Hello! I am DocuMind AI, your intelligent document analysis assistant. "
-            "You can upload PDF documents in the sidebar, and I will help you analyze them, "
-            "extract relevant data, and answer any specific questions you have about them."
-        )
+        logger.error("ConversationalReplyNode LLM error: %s", e)
+        if PlannerAgent._is_session_meta(query):
+            content = (
+                f"In this chat you have asked {question_count} question"
+                f"{'s' if question_count != 1 else ''} so far, including this one."
+            )
+        else:
+            content = (
+                "Hello! I am DocuMind AI. Upload PDFs in the sidebar and ask "
+                "questions about them."
+            )
 
     log_agent_step(state, "ConversationalReplyNode", "Success", query=query)
     return {
         "final_response": content,
+        "citations": [],
+        "retrieved_docs": [],
+        "retrieval_results": [],
         "messages": [AIMessage(content=content)],
-        "audit_log": [{"step": "ConversationalReplyNode", "status": "Success"}]
+        "audit_log": [{
+            "step": "ConversationalReplyNode",
+            "status": "Success",
+            "question_count": question_count,
+        }]
     }
 

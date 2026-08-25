@@ -1,230 +1,383 @@
-﻿# 📄 DocuMind AI
+﻿# Agentic RAG
 
-**Intelligent Document Analysis Platform**
+**Retrieval is a tool the model calls — not a hardcoded graph node.**
 
-[![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/downloads/)
-[![Streamlit](https://img.shields.io/badge/Streamlit-1.28+-red.svg)](https://streamlit.io/)
-[![LangGraph](https://img.shields.io/badge/LangGraph-Latest-green.svg)](https://github.com/langchain-ai/langgraph)
-[![LangSmith](https://img.shields.io/badge/LangSmith-Traced-orange.svg)](https://smith.langchain.com/)
+Agentic RAG is a document Q&A platform where a ReAct-style controller decides *whether* to search, *what* to search, and *when* it has enough evidence. The loop is self-sustaining:
+
+```
+query → rewrite follow-up → greetings? → memory gate
+                                      → ReAct agent ⇄ tools (search, list, read page, extract, calc)
+                                      → ingest evidence → critic
+                                      → synthesizer (citations)
+```
+
+Upload PDFs, ask questions in chat or by voice, and get citation-backed answers with a full audit trail of every hop.
+
+[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-Backend-009688.svg)](https://fastapi.tiangolo.com/)
+[![Streamlit](https://img.shields.io/badge/Streamlit-UI-FF4B4B.svg)](https://streamlit.io/)
+[![LangGraph](https://img.shields.io/badge/LangGraph-ReAct-green.svg)](https://github.com/langchain-ai/langgraph)
+[![Qdrant](https://img.shields.io/badge/Qdrant-Hybrid_Search-DC244C.svg)](https://qdrant.tech/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+This project started as a fork of [DocuMind](https://github.com/abhinav-kurup/Documind) and replaced the fixed planner → single-hop / multi-hop graph with a tool-calling agent. Retrieval, page reads, table extraction, and arithmetic are native LangChain tools (`bind_tools` / `tool_calls`), executed by LangGraph `ToolNode` — not JSON scraped out of a prompt.
 
 ---
 
-## Overview
+## Why this architecture
 
-DocuMind AI is a multi-agent RAG (Retrieval-Augmented Generation) platform for intelligent conversation with PDF documents. It classifies every query, routes it through a specialised retrieval pipeline, and returns citation-backed answers with a full audit trail.
+Classic RAG always retrieves, then answers. Multi-agent RAG often hard-codes *when* each specialist runs. Here the model is in the loop:
+
+| Problem in static RAG | What Agentic RAG does |
+|---|---|
+| Every query hits the index, including greetings | A planner routes chitchat away from retrieval |
+| One-shot search misses multi-hop facts | The agent can search again with a better query |
+| Snippets are truncated | `read_pages` fetches a specific PDF page |
+| Working set mixes unrelated follow-ups | Topic-shift clears working memory; evidence is session-scoped |
+| The model hallucinates when evidence is thin | A critic grades working memory before synthesis |
+
+**Stop conditions** (any one ends the loop):
+
+- Max hops (`AGENT_MAX_HOPS`, default **5**)
+- Two consecutive empty `search_docs` / `read_pages` calls
+- Critic recommendation `answer` or `give_up`
+- The model emits **no further tool calls**
 
 ---
 
 ## Architecture
 
 ```
+                    ┌─────────────────────────────────────────────┐
+  Streamlit UI ────►│              FastAPI backend                │
+  (frontend/app.py) │  /chat  /documents  /voice  /audit  /health │
+                    └──────────┬──────────────┬───────────────────┘
+                               │              │
+                               ▼              ▼
+                     LangGraph orchestrator   Redis + RQ worker
+                               │              │  (PDF ingest)
+                               ▼              ▼
+                     Qdrant hybrid index ◄────┘
+                     (dense BGE-M3 + sparse BM25, server-side RRF)
+```
+
+### Query graph
+
+```
 START
   │
   ▼
-Planner  ──────────────────────────────► Conversational
+Contextualizer ── rewrite follow-ups using chat history + rolling summary
   │
-  ├── single_hop ──► SingleHopRetrievalAgent
-  │                        │
-  └── multi_hop  ──► MultiHopRetrievalAgent
-                           │
-                           ▼
-                       Extraction
-                           │
-                           ▼
-                        Analysis ◄──── Tools (calculator)
-                           │
-                          END
+  ▼
+Planner ── conversational ──────────────────────────────► END (no retrieval)
+  │
+  └── anything else
+        │
+        ▼
+      Memory gate ── clear evidence on topic shift; maybe compress old turns
+        │
+        ▼
+      ┌────────────────────────────────────────┐
+      │  ReAct agent  ──tool_calls──► ToolNode │
+      │       ▲                         │      │
+      │       │                         ▼      │
+      │     Critic ◄──────── Ingest observations│
+      └────────────────────────────────────────┘
+        │  (no tool calls / hop limit / critic says answer)
+        ▼
+      Prepare synthesis → Analysis agent (citations, confidence)
+        │
+        ▼
+       END
 ```
 
-### Retrieval Pipeline
+### Tools the agent can call
 
-**Single-hop:** One round of hybrid search → cross-encoder reranking → diversity selection.
+| Tool | Purpose |
+|---|---|
+| `search_docs` | Hybrid search + Cohere rerank over uploaded PDFs; optional filename filter |
+| `list_documents` | Indexed PDF names |
+| `read_pages` | Fetch chunks for one filename + 1-based page when a hit is truncated |
+| `extract_tables` | Pull tables/numbers from **working memory** (must search first) |
+| `calculator` | Safe arithmetic on retrieved numbers |
 
-**Multi-hop:** Query decomposed into subqueries → parallel hybrid search per subquery → Reciprocal Rank Fusion (RRF) → cross-encoder reranking → diversity selection + coverage validation.
+### Three-layer memory
+
+1. **Short-term** — LangGraph `MemorySaver` checkpoint per `session_id` (message transcript).
+2. **Working** — `evidence_store`: only chunks the agent actually fetched. Deduped, score-ranked, capped (`EVIDENCE_MAX_CHUNKS`, default 10). Survives follow-ups; **cleared on topic shift**.
+3. **Long-term** — Qdrant native hybrid collection. A rolling `summary` compresses older turns once the message window overflows (`MEMORY_MESSAGE_WINDOW`, default 16).
 
 ---
 
 ## Features
 
-- **Query planning** — Planner classifies queries as `conversational`, `single_hop`, or `multi_hop` and decomposes multi-hop queries into independent subqueries.
-- **Hybrid retrieval** — BM25 keyword search fused with dense vector search (BAAI/bge-m3 embeddings).
-- **Cross-encoder reranking** — BAAI/bge-reranker-v2-m3 re-scores candidates against the original query.
-- **Diversity selection** — Greedy chunk selection with page/document repetition penalties and subquery coverage bonuses.
-- **Coverage validation** — Guarantees every subquery has at least one supporting chunk before passing context to the LLM.
-- **PydanticAI analysis** — Structured answer generation with confidence score and citations.
-- **Extraction agent** — On-demand structured extraction for queries containing "extract" or "table".
-- **Voice I/O** — Speech-to-text via Whisper (`faster-whisper`), text-to-speech via SpeechT5 (local inference).
-- **LangSmith tracing** — Every agent step decorated with `@traceable` for full pipeline observability.
-- **RAGAS evaluation** — Automated benchmark evaluation with answer correctness, faithfulness, context recall, and relevancy metrics.
-- **Audit logs** — Per-query step trail (agent, status, subqueries, retrieved count) stored as JSONL.
+- **Agentic retrieval** — Native tool calling; the LLM decides the next hop.
+- **Follow-up rewriting** — Pronouns and “that paper” become standalone queries from session history.
+- **Hybrid search** — Dense `BAAI/bge-m3` + sparse `Qdrant/bm25` fused with Reciprocal Rank Fusion **inside Qdrant** (no local BM25 index).
+- **Cohere rerank** — `rerank-v4.0-fast` re-scores candidates, then diversity selection (page/document penalties).
+- **Layout-aware ingest** — LlamaParse or PyMuPDF; optional Gemini vision captions for figures (`ENABLE_IMAGE_PROCESSING`).
+- **Async ingestion** — Upload returns a job id; a Redis/RQ worker chunks and indexes in the background.
+- **Voice I/O** — Whisper STT (`faster-whisper`) and Piper TTS (local ONNX), plus a spoken intent router.
+- **Citation-backed answers** — Analysis agent returns confidence and source pages.
+- **Audit trail** — Every node writes JSONL (route, hops, tool names, critic verdict).
+- **LangSmith** — `@traceable` on agent steps when tracing is enabled.
+- **RAGAS evaluation** — Answer correctness, faithfulness, context recall, relevancy, plus retrieval IR metrics.
 
 ---
 
-## Tech Stack
+## Tech stack
 
-| Component | Technology |
+| Layer | Choice |
 |---|---|
-| Workflow engine | LangGraph |
-| LLM — Planner | Groq `llama-3.1-8b-instant` |
-| LLM — Retrieval decomposer | Groq `llama-3.1-8b-instant` |
-| LLM — Extraction | Gemini `gemini-2.0-flash-lite` |
-| LLM — Analysis | Groq `llama-3.3-70b-versatile` (PydanticAI) |
-| Embeddings | `BAAI/bge-m3` (sentence-transformers) |
-| Reranker | `BAAI/bge-reranker-v2-m3` (CrossEncoder) |
-| Vector store | ChromaDB |
-| Keyword search | BM25 (rank-bm25) |
-| STT | Whisper via faster-whisper |
-| TTS | microsoft/speecht5_tts + speecht5_hifigan |
+| Workflow | LangGraph (`StateGraph` + `ToolNode` + `MemorySaver`) |
+| Agent LLM | Configurable; default `groq/llama-3.3-70b-versatile` |
+| Planner / voice router | Groq `llama-3.1-8b-instant` (defaults) |
+| Extraction | Gemini `gemini-2.0-flash-lite` |
+| Analysis | Gemini `gemini-2.0-flash` |
+| Embeddings | `BAAI/bge-m3` (sentence-transformers / HuggingFace) |
+| Sparse vectors | FastEmbed `Qdrant/bm25` |
+| Reranker | Cohere `rerank-v4.0-fast` |
+| Vector DB | Qdrant (HTTP, default `localhost:6333`) |
+| Job queue | Redis + RQ |
+| API | FastAPI + Uvicorn |
+| UI | Streamlit |
+| STT / TTS | faster-whisper / Piper |
 | Observability | LangSmith |
 | Evaluation | RAGAS |
-| UI | Streamlit |
+
+LLM identifiers use a `provider/model` prefix: `groq/...`, `gemini/...`, or `ollama/...`. Unprefixed names go to Ollama.
 
 ---
 
-## Quick Start
+## Prerequisites
 
-### Prerequisites
+- **Python 3.10+**
+- **Docker** (recommended) *or* local **Qdrant** + **Redis**
+- API keys:
+  - [Groq](https://console.groq.com/)
+  - [Google AI Studio](https://aistudio.google.com/) (Gemini)
+  - [Cohere](https://dashboard.cohere.com/api-keys) (rerank)
+- Optional: [LlamaCloud](https://cloud.llamaindex.ai/) if `PARSER_TYPE=llama_parse`
+- Optional: [LangSmith](https://smith.langchain.com/) for traces
+- Optional: NVIDIA GPU + CUDA 12.6 (the pinned `torch` wheel in `requirements.txt` is `cu126`; change it for CPU-only)
 
-- Python 3.9+
-- Groq API key ([get one free](https://console.groq.com/))
-- Google API key for Gemini ([AI Studio](https://aistudio.google.com/))
+---
 
-### Installation
+## Quick start (Docker Compose)
+
+This is the easiest path: Qdrant, Redis, API, ingest worker, and UI come up together.
 
 ```bash
-git clone https://github.com/yourusername/Documind.git
-cd Documind
-pip install -r requirements.txt
+git clone https://github.com/abhinav-kurup/Agentic_RAG.git
+cd Agentic_RAG
+
+copy .env.example .env   # Windows
+# cp .env.example .env   # macOS / Linux
+
+# fill in GROQ_API_KEY, GOOGLE_API_KEY, COHERE_API_KEY
+docker compose up --build
 ```
 
-### Environment
+| Service | URL |
+|---|---|
+| Streamlit UI | http://localhost:8501 |
+| FastAPI | http://localhost:8000 |
+| OpenAPI docs | http://localhost:8000/docs |
+| Qdrant | http://localhost:6333 |
+| Redis | localhost:6379 |
 
-Copy `.env.example` to `.env` and fill in:
+Compose injects `QDRANT_URL=http://qdrant:6333` and `REDIS_URL=redis://redis:6379/0` into the backend and worker.
+
+---
+
+## Local development (no Compose for the app)
+
+You still need Qdrant and Redis running. Either start only those containers:
+
+```bash
+docker compose up qdrant redis
+```
+
+Or install them yourself. Then:
+
+```bash
+python -m venv .venv
+# Windows
+.venv\Scripts\activate
+# macOS / Linux
+source .venv/bin/activate
+
+pip install -r requirements.txt
+copy .env.example .env   # then edit keys
+```
+
+**Default Redis URL in code is `redis://localhost:6380/0`.** If Redis is on 6379 (Compose and most installs), set:
 
 ```env
-# LLM providers
-GROQ_API_KEY=your_groq_api_key
-GOOGLE_API_KEY=your_google_api_key
-
-# Per-agent model overrides (optional)
-PLANNER_MODEL=groq/llama-3.1-8b-instant
-RETRIEVAL_MODEL=groq/llama-3.1-8b-instant
-EXTRACTION_MODEL=gemini/gemini-2.0-flash-lite
-ANALYSIS_MODEL=groq/llama-3.3-70b-versatile
-
-# Retrieval
-EMBEDDING_MODEL=BAAI/bge-m3
-CROSS_ENCODER_MODEL=BAAI/bge-reranker-v2-m3
-USE_CROSS_ENCODER=true
-
-# Vector store
-CHROMA_DB_DIR=data/chroma
-
-# Voice
-ENABLE_VOICE=true
-ENABLE_TTS=true
-WHISPER_MODEL=base
-TTS_SPEAKER_INDEX=7306
-
-# LangSmith (optional)
-LANGCHAIN_TRACING_V2=true
-LANGCHAIN_API_KEY=your_langsmith_key
-LANGCHAIN_PROJECT=documind
+REDIS_URL=redis://localhost:6379/0
 ```
 
-### Run
+Run three processes from the repo root:
 
 ```bash
-streamlit run app.py
+# 1. API
+uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+
+# 2. Ingest worker (required for PDF upload)
+python workers/run_worker.py
+
+# 3. UI
+streamlit run frontend/app.py
+# or: python app.py
 ```
 
-Open `http://localhost:8501`.
+Windows uses RQ `SimpleWorker` (no `os.fork`). Keep the worker in its own terminal.
+
+---
+
+## Environment
+
+Copy [`.env.example`](.env.example) to `.env`. Important variables:
+
+| Variable | Default | Role |
+|---|---|---|
+| `GROQ_API_KEY` | — | Planner, agent, some analysis paths |
+| `GOOGLE_API_KEY` | — | Gemini extraction / analysis / optional vision |
+| `COHERE_API_KEY` | — | Rerank |
+| `PARSER_TYPE` | `pymupdf` | `pymupdf` or `llama_parse` |
+| `LLAMA_CLOUD_API_KEY` | — | Required for LlamaParse |
+| `QDRANT_URL` | `http://localhost:6333` | Vector DB |
+| `QDRANT_COLLECTION_NAME` | `documind_collection` | Collection name |
+| `REDIS_URL` | `redis://localhost:6380/0` | Job queue (override to `:6379` if needed) |
+| `AGENT_MODEL` | `groq/llama-3.3-70b-versatile` | ReAct controller |
+| `AGENT_MAX_HOPS` | `5` | Hard stop on the tool loop |
+| `EVIDENCE_MAX_CHUNKS` | `10` | Working-memory cap |
+| `EMBEDDING_MODEL` | `BAAI/bge-m3` | Dense encoder |
+| `COHERE_RERANK_MODEL` | `rerank-v4.0-fast` | Reranker |
+| `ENABLE_VOICE` / `ENABLE_TTS` | `true` | Speech I/O |
+| `ENABLE_IMAGE_PROCESSING` | `false` | Gemini captions for figures (slow / costly) |
+| `DOCUMIND_API_URL` | `http://localhost:8000` | Frontend → API |
+| `LANGCHAIN_TRACING_V2` | — | Set `true` + `LANGCHAIN_API_KEY` for LangSmith |
 
 ---
 
 ## Usage
 
-### Uploading Documents
+### Documents
 
-1. Open the sidebar → **Upload PDFs**
-2. Select one or more PDF files
-3. Click **Process Documents**
+1. Sidebar → upload one or more **PDFs**.
+2. Processing is **asynchronous**. Watch job progress in the UI (or `GET /documents/jobs/{job_id}`).
+3. Already-indexed files are skipped. Delete a document from the sidebar before re-uploading to re-ingest.
 
-Already-indexed files are skipped. Delete a document from the sidebar list before re-uploading to re-ingest it.
-
-### Asking Questions
+### Questions
 
 ```
-"What is the SAC algorithm used for in this paper?"        ← single_hop
-"Compare the architecture of model A and model B"          ← multi_hop
-"Extract the results table from chapter 4"                 ← triggers Extraction agent
-"Hello, how are you?"                                      ← conversational (no retrieval)
+"What is the SAC algorithm used for in this paper?"     ← agent searches, maybe once
+"Compare the architecture of model A and model B"       ← multiple search hops
+"Extract the results table from chapter 4"              ← search + extract_tables
+"What was the accuracy on page 12?"                     ← search, then read_pages if needed
+"Hello, how are you?"                                   ← conversational, no retrieval
 ```
 
-### Tabs
+### UI tabs
 
-- **💬 Chat** — Main conversation interface with citations and voice I/O.
-- **📊 Audit Logs** — Per-query execution trail showing every agent step, route, subqueries, and retrieved count.
-- **📈 Metrics** — RAGAS benchmark scores loaded from `evaluation/results/my_metrics.json`.
+- **Chat** — Answers, citations, voice orb.
+- **Audit Logs** — Per-query steps: hops, tool names, critic verdict, retrieved count.
+- **Metrics** — RAGAS / IR scores from `evaluation/results/my_metrics.json`.
 
 ---
 
-## Project Structure
+## HTTP API
+
+Base URL: `http://localhost:8000` (interactive docs at `/docs`).
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/health` | Qdrant + Redis status |
+| `GET` | `/config/features` | Voice flags, embedding model |
+| `POST` | `/chat/query` | `{ "query", "session_id" }` → answer + citations + audit |
+| `POST` | `/documents/upload` | Multipart PDFs → `{ job_id }` |
+| `GET` | `/documents` | Indexed filenames |
+| `GET` | `/documents/jobs/{job_id}` | Ingest progress |
+| `DELETE` | `/documents/{source}` | Remove one PDF from the index |
+| `POST` | `/documents/clear` | Wipe collection |
+| `POST` | `/transcribe` | Audio → transcript |
+| `POST` | `/interpret` | Audio → intent + reconstructed query |
+| `POST` | `/synthesize` | Text → speech |
+| `GET` | `/audit/logs` | Recent audit JSONL |
+| `GET` | `/metrics` | Evaluation JSON |
+
+Keep `session_id` stable across turns so the checkpointer and working memory apply.
+
+---
+
+## Project structure
 
 ```
-Documind/
+Agentic-RAG/
 ├── agents/
-│   ├── planner.py          # Query classification + subquery decomposition
-│   ├── retrieval.py        # BaseRetrievalAgent, SingleHopRetrievalAgent, MultiHopRetrievalAgent
-│   ├── extraction.py       # Structured data extraction (on-demand)
-│   ├── analysis2.py        # PydanticAI answer synthesis with citations
-│   ├── prompt.py           # Centralised prompt definitions
-│   ├── stt.py              # Speech-to-text (Whisper)
-│   └── tts.py              # Text-to-speech (SpeechT5)
-├── audit/
-│   └── logger.py           # JSONL audit trail writer
+│   ├── react_agent.py      # AgenticController: memory gate, think, ingest, critic
+│   ├── tools.py            # search_docs, list_documents, read_pages, extract_tables, calculator
+│   ├── memory.py           # evidence merge, message window, rolling summary
+│   ├── planner.py          # conversational vs document questions
+│   ├── query_condenser.py  # follow-up → standalone query
+│   ├── analysis.py         # final answer + citations
+│   ├── retrieval_base.py   # hybrid retrieve, rerank, diversity select
+│   ├── prompt.py           # versioned prompts
+│   ├── stt.py / tts.py     # Whisper / Piper
+│   └── voice_intent.py     # spoken command routing
+├── backend/
+│   ├── main.py             # FastAPI app
+│   ├── api/routes/         # chat, documents, voice, audit, health
+│   ├── services/           # query, ingestion, jobs, voice
+│   └── queue/              # Redis + RQ enqueue / job store
 ├── core/
-│   ├── config.py           # Environment-based config
-│   ├── conditions.py       # LangGraph routing conditions
-│   ├── llm.py              # LLM factory (Groq, Gemini, Ollama)
-│   ├── orchestrator.py     # LangGraph graph definition
-│   └── state.py            # AgentState TypedDict
-├── document_processing/
-│   ├── loader.py           # PDF text extraction (PyMuPDF)
-│   └── chunking.py         # Document chunking
-├── evaluation/
-│   ├── benchmarks.jsonl    # Ground-truth QA pairs
-│   ├── generate_predictions.py
-│   ├── metrics.py          # RAGAS metric wrappers
-│   ├── runner.py           # Evaluation orchestration
-│   └── results/            # Saved metric outputs
-├── utils/
-│   └── helpers.py          # Shared helpers (log_agent_step, dump_agent_state)
-├── vectorstore/
-│   └── chroma.py           # ChromaDB + BM25 hybrid search
-├── data/
-│   ├── chroma/             # Vector database (auto-created)
-│   ├── documents/          # Uploaded PDFs (auto-created)
-│   └── logs/               # Audit JSONL files (auto-created)
-├── app.py                  # Streamlit application
+│   ├── orchestrator.py     # LangGraph wiring
+│   ├── state.py            # AgentState (evidence_store, hop_count, critic, …)
+│   ├── conditions.py       # route_query / after_agent
+│   ├── config.py           # environment
+│   └── llm.py              # Groq / Gemini / Ollama factory
+├── document_processing/    # loader, layout parser, type-aware chunking
+├── vectorstore/qdrant.py   # native hybrid collection
+├── workers/                # RQ ingest worker
+├── frontend/               # Streamlit UI + API client + voice orb
+├── evaluation/             # benchmarks, RAGAS runner, saved metrics
+├── audit/logger.py         # JSONL audit writer
+├── docker-compose.yml
+├── Dockerfile
 └── requirements.txt
 ```
+
+Runtime data (`data/documents`, `data/logs`, `data/jobs`, Piper voices, audio cache) is gitignored.
 
 ---
 
 ## Evaluation
 
-Run the RAGAS benchmark suite:
+1. Produce predictions (see `evaluation/generate_predictions.py`).
+2. Score against a JSONL benchmark:
 
 ```bash
-python evaluation/runner.py
+python evaluation/runner.py `
+  --benchmark evaluation/benchmarks.jsonl `
+  --predictions path/to/predictions.jsonl `
+  --output evaluation/results/metrics.json
 ```
 
-Results are saved to `evaluation/results/my_metrics.json` and displayed in the **📈 Metrics** tab.
+Metrics include RAGAS (correctness, faithfulness, context recall, relevancy) and retrieval stats (hit rate, MRR, nDCG). Latest saved scores are shown in the **Metrics** tab.
+
+---
+
+## Design notes (interview-friendly)
+
+- **Tool calling is native.** LangChain `bind_tools` + LangGraph `ToolNode`. The stop signal is “no `tool_calls` on the last AI message,” not a hand-rolled parser.
+- **Working memory ≠ the vector store.** Qdrant holds everything; `evidence_store` holds only what this session’s agent fetched. Follow-ups reuse it; a topic shift wipes it.
+- **Critic is structured output** (`sufficient`, `missing`, `recommendation` ∈ `answer | search_again | read_pages | give_up`), with a heuristic fallback if the structured call fails.
+- **Ingest is out of the request path.** Uploads enqueue RQ jobs so chat stays responsive while PDFs are parsed and embedded.
 
 ---
 
 ## License
 
-MIT License — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).

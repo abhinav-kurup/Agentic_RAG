@@ -9,7 +9,9 @@ def log_agent_step(state: AgentState, step_name: str, status: str, **kwargs):
         state["audit_log"].append({"step": step_name, "status": status, **kwargs})
 
 def dump_agent_state(state: AgentState, agent_name: str, log_dir: str = "data/logs/state_dumps"):
-    """Dumps the full AgentState to a JSON file for debugging."""
+    """Dumps AgentState to JSON. Off by default — writing under the repo restarts uvicorn --reload."""
+    if os.getenv("DUMP_AGENT_STATE", "false").lower() not in ("1", "true", "yes"):
+        return
     os.makedirs(log_dir, exist_ok=True)
     
     safe_state = {}

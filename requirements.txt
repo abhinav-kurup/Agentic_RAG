@@ -13,7 +13,8 @@ langsmith
 pymupdf
 rank-bm25
 transformers
-torch
+--extra-index-url https://download.pytorch.org/whl/cu126
+torch==2.12.1+cu126
 pandas
 numpy
 pydantic
@@ -24,6 +25,8 @@ python-dotenv
 faster-whisper
 soundfile
 datasets
+piper-tts
+ragas
 num2words
 qdrant-client
 fastembed

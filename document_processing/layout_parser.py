@@ -12,6 +12,29 @@ from document_processing.image_describer import ImageDescriber
 
 logger = logging.getLogger(__name__)
 
+# Markdown pipe tables: header + separator + one or more body rows
+_TABLE_RE = re.compile(
+    r"(\|[^\n]+\|\n\|[-:| ]+\|\n(?:\|[^\n]+\|\n?)+)",
+)
+
+
+def _blocks_from_page_markdown(page_md: str) -> List[Dict[str, Any]]:
+    """Split page markdown into text/table blocks without duplicating table content in text."""
+    blocks: List[Dict[str, Any]] = []
+    last_end = 0
+    for match in _TABLE_RE.finditer(page_md):
+        before = page_md[last_end:match.start()].strip()
+        if before:
+            blocks.append({"type": "text", "content": before})
+        blocks.append({"type": "table", "content": match.group(1).strip()})
+        last_end = match.end()
+    after = page_md[last_end:].strip()
+    if after:
+        blocks.append({"type": "text", "content": after})
+    if not blocks and page_md.strip():
+        blocks.append({"type": "text", "content": page_md.strip()})
+    return blocks
+
 
 class PDFLayoutParser:
     """
@@ -84,22 +107,20 @@ class PDFLayoutParser:
             print(page_md[:800] + ("\n... [truncated]" if len(page_md) > 800 else ""))
             print("=================================================================================\n")
 
-            # Detect tables in Markdown output (regex for Markdown table rows)
-            table_matches = re.findall(r"(\|[^\n]+\|\n\|[-:| ]+\|\n(?:\|[^\n]+\|\n?)+)", page_md)
-            if table_matches:
-                total_tables += len(table_matches)
-                for tbl_idx, tbl_str in enumerate(table_matches):
+            # Emit separate table blocks so TypeBasedChunker keeps tables intact
+            page_blocks = _blocks_from_page_markdown(page_md)
+            table_count = sum(1 for b in page_blocks if b["type"] == "table")
+            if table_count:
+                total_tables += table_count
+                for tbl_idx, block in enumerate(
+                    (b for b in page_blocks if b["type"] == "table"), start=1
+                ):
                     table_details.append({
                         "page_number": page_num,
-                        "table_index": tbl_idx + 1,
-                        "preview": tbl_str[:200] + "...",
+                        "table_index": tbl_idx,
+                        "preview": block["content"][:200] + "...",
                     })
-
-            # Add LlamaParse Markdown block
-            blocks.append({
-                "type": "text",
-                "content": page_md,
-            })
+            blocks.extend(page_blocks)
 
             # Extract embedded images (optional — gated by ENABLE_IMAGE_PROCESSING)
             if Config.ENABLE_IMAGE_PROCESSING and doc is not None and page_idx < len(doc):
@@ -157,11 +178,14 @@ class PDFLayoutParser:
             logger.warning(f"Could not save LlamaParse markdown file to disk: {save_err}")
 
         # Write Parsing Statistics JSON to disk
+        text_block_count = sum(
+            1 for p in processed_pages for b in p.get("blocks", []) if b.get("type") == "text"
+        )
         parsing_stats = {
             "document_name": source_name,
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "total_pages": len(documents),
-            "total_text_blocks": len(documents),
+            "total_text_blocks": text_block_count,
             "total_tables": total_tables,
             "total_images": total_images,
             "markdown_file": saved_md_path,

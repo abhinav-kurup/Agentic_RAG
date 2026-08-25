@@ -59,6 +59,13 @@ class TranscribeResponse(BaseModel):
     transcript: str
 
 
+class VoiceInterpretResponse(BaseModel):
+    transcript: str
+    reconstructed_query: str
+    intent: str
+    spoken_ack: str = ""
+
+
 class TTSRequest(BaseModel):
     text: str
     query_id: Optional[str] = None

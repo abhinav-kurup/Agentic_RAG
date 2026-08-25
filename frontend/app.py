@@ -1,4 +1,3 @@
-import hashlib
 import json
 import logging
 import sys
@@ -17,11 +16,44 @@ import streamlit as st
 from core.config import Config
 from frontend import api_client
 from frontend.api_client import APIError
+from frontend.voice_orb import voice_orb
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-st.set_page_config(page_title="DocuMind AI", layout="wide", page_icon="📄")
+st.set_page_config(page_title="Agentic RAG", layout="wide", page_icon="📄")
+
+st.markdown(
+    """
+    <style>
+    iframe[title="documind_voice_orb"],
+    iframe[title*="documind_voice_orb"] {
+      position: fixed !important;
+      bottom: 0.85rem !important;
+      right: 0.45rem !important;
+      width: 240px !important;
+      height: 300px !important;
+      z-index: 1000 !important;
+      background: transparent !important;
+      border: none !important;
+      overflow: visible !important;
+    }
+    div[data-testid="stIFrame"]:has(iframe[title*="voice_orb"]),
+    div[data-testid="stElementContainer"]:has(iframe[title*="voice_orb"]),
+    div[data-testid="element-container"]:has(iframe[title*="voice_orb"]),
+    .stCustomComponentV1:has(iframe[title*="voice_orb"]) {
+      position: fixed !important;
+      bottom: 0.85rem !important;
+      right: 0.45rem !important;
+      width: 240px !important;
+      height: 300px !important;
+      z-index: 1000 !important;
+      background: transparent !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 def ensure_session_id():
@@ -35,11 +67,29 @@ def ensure_messages():
 
 
 def check_backend():
+    now = time.time()
+    cached = st.session_state.get("_health_cache")
+    if cached and now - cached["t"] < 20:
+        return cached["ok"], cached["info"]
     try:
         health = api_client.health_check()
-        return health.get("status") == "ok", health
+        ok = health.get("status") == "ok"
+        st.session_state._health_cache = {"t": now, "ok": ok, "info": health}
+        return ok, health
     except Exception as e:
-        return False, {"error": str(e)}
+        info = {"error": str(e)}
+        st.session_state._health_cache = {"t": now, "ok": False, "info": info}
+        return False, info
+
+
+def cached_documents(force: bool = False):
+    now = time.time()
+    cached = st.session_state.get("_docs_cache")
+    if not force and cached and now - cached["t"] < 15:
+        return cached["docs"]
+    docs = api_client.list_documents()
+    st.session_state._docs_cache = {"t": now, "docs": docs}
+    return docs
 
 
 def _file_status_icon(status: str) -> str:
@@ -110,7 +160,14 @@ STAGE_LABELS = {
 
 
 def poll_active_ingestion_job() -> None:
-    """Poll once and rerun until the active ingestion job finishes."""
+    job_id = st.session_state.get("active_ingest_job_id")
+    if not job_id:
+        return
+    _ingest_poll_fragment()
+
+
+@st.fragment(run_every=2)
+def _ingest_poll_fragment() -> None:
     job_id = st.session_state.get("active_ingest_job_id")
     if not job_id:
         return
@@ -140,8 +197,9 @@ def poll_active_ingestion_job() -> None:
             status_widget.update(label="Processing complete!", state="complete", expanded=False)
             st.session_state.active_ingest_job_id = None
             st.session_state.uploader_key += 1
-            time.sleep(0.5)
+            st.session_state.pop("_docs_cache", None)
             st.rerun()
+            return
 
         if job_status == "failed":
             st.error(job.get("error", "Ingestion failed"))
@@ -149,9 +207,12 @@ def poll_active_ingestion_job() -> None:
             st.session_state.active_ingest_job_id = None
             return
 
-        if job_status in ("queued", "processing", "pending"):
-            time.sleep(2.0)
-            st.rerun()
+
+def _trim_stored_audio(keep: int = 3) -> None:
+    msgs = st.session_state.messages
+    with_audio = [i for i, m in enumerate(msgs) if m.get("audio")]
+    for i in with_audio[:-keep]:
+        msgs[i]["audio"] = None
 
 
 def poll_tts_for_message(query_id: str, job_id: str):
@@ -160,29 +221,68 @@ def poll_tts_for_message(query_id: str, job_id: str):
         if job.get("status") == "completed":
             audio = api_client.download_tts_audio(job_id)
             for msg in st.session_state.messages:
-                if msg.get("query_id") == query_id:
+                if msg.get("tts_job_id") == job_id:
                     msg["audio"] = audio
                     msg["audio_status"] = "ready"
-                    msg["tts_job_id"] = job_id
                     break
+            _trim_stored_audio()
         elif job.get("status") == "failed":
             for msg in st.session_state.messages:
-                if msg.get("query_id") == query_id:
+                if msg.get("tts_job_id") == job_id:
                     msg["audio_status"] = "failed"
                     break
     except Exception as e:
         logger.error("TTS poll failed: %s", e)
 
 
-def handle_user_query(prompt: str, tts_enabled: bool = True):
+def last_assistant_message():
+    for msg in reversed(st.session_state.messages):
+        if msg.get("role") == "assistant" and (msg.get("content") or "").strip():
+            return msg
+    return None
+
+
+def _render_answer_audio(message: dict) -> None:
+    autoplay = bool(message.pop("autoplay_once", False))
+    try:
+        st.audio(message["audio"], format="audio/wav", autoplay=autoplay)
+    except TypeError:
+        st.audio(message["audio"], format="audio/wav")
+
+
+def start_tts_for_message(message: dict) -> None:
+    if not Config.ENABLE_TTS:
+        return
+    text = (message.get("content") or "").strip()
+    if not text:
+        return
+    try:
+        tts_job = api_client.start_tts(text, query_id=message.get("query_id"))
+        message["tts_job_id"] = tts_job.get("job_id")
+        message["audio_status"] = "processing"
+        message["audio"] = None
+        message["autoplay_once"] = True
+    except Exception as e:
+        logger.error("Failed to start TTS: %s", e)
+        message["audio_status"] = "failed"
+
+
+def handle_user_query(prompt: str, tts_enabled: bool = False):
     prompt = (prompt or "").strip()
     if not prompt:
         return
 
     st.session_state.messages.append({"role": "user", "content": prompt})
+    st.session_state.pending_query = prompt
+    st.session_state.pending_tts = tts_enabled
+    st.rerun()
 
-    with st.chat_message("user"):
-        st.markdown(prompt)
+
+def process_pending_query() -> None:
+    prompt = st.session_state.pop("pending_query", None)
+    if not prompt:
+        return
+    tts_enabled = st.session_state.pop("pending_tts", False)
 
     with st.spinner("Thinking..."):
         try:
@@ -200,23 +300,24 @@ def handle_user_query(prompt: str, tts_enabled: bool = True):
                 except Exception as e:
                     logger.error("Failed to start TTS: %s", e)
 
-            st.session_state.messages.append(
-                {
-                    "role": "assistant",
-                    "content": response,
-                    "citations": result.get("citations"),
-                    "query_id": query_id,
-                    "audio_status": audio_status,
-                    "tts_job_id": tts_job_id,
-                    "audio": None,
-                }
-            )
+            assistant_msg = {
+                "role": "assistant",
+                "content": response,
+                "citations": result.get("citations"),
+                "query_id": query_id,
+                "audio_status": audio_status,
+                "tts_job_id": tts_job_id,
+                "audio": None,
+            }
+            if audio_status == "processing":
+                assistant_msg["autoplay_once"] = True
+            st.session_state.messages.append(assistant_msg)
 
             st.session_state.last_sources = {
                 "audit_log": result.get("audit_log", []),
                 "retrieved_docs": result.get("retrieved_docs", []),
             }
-            st.rerun()
+            st.session_state.voice_pending_read = response
         except APIError as e:
             st.session_state.messages.append(
                 {
@@ -228,14 +329,81 @@ def handle_user_query(prompt: str, tts_enabled: bool = True):
                     "audio": None,
                 }
             )
-            st.rerun()
+    st.rerun()
+
+
+def consume_orb_event(event) -> bool:
+    if not event or not isinstance(event, dict):
+        return False
+    eid = str(event.get("id") or "")
+    if not eid or eid == st.session_state.get("last_orb_id"):
+        return False
+    st.session_state.last_orb_id = eid
+    etype = event.get("type")
+
+    if etype == "error":
+        st.session_state.voice_error = event.get("message") or "Voice failed"
+        return True
+
+    if etype in ("confirm_done", "quiet", "hangup"):
+        st.session_state.voice_pending_read = ""
+        st.session_state.voice_error = ""
+        return True
+
+    if etype != "turn":
+        return False
+
+    reconstructed = (event.get("reconstructed_query") or event.get("transcript") or "").strip()
+    if not reconstructed:
+        return False
+    user_msg = {"role": "user", "content": reconstructed}
+    heard = (event.get("transcript") or "").strip()
+    if heard and heard != reconstructed:
+        user_msg["heard"] = heard
+    st.session_state.messages.append(user_msg)
+
+    response = event.get("response") or ""
+    st.session_state.messages.append(
+        {
+            "role": "assistant",
+            "content": response,
+            "citations": event.get("citations") or [],
+            "query_id": event.get("query_id"),
+            "audio_status": "none",
+            "tts_job_id": None,
+            "audio": None,
+        }
+    )
+    st.session_state.last_sources = {
+        "audit_log": event.get("audit_log") or [],
+        "retrieved_docs": event.get("retrieved_docs") or [],
+    }
+    st.session_state.voice_pending_read = response
+    st.session_state.voice_error = ""
+    return True
+
+
+@st.fragment(run_every=1)
+def tts_poller() -> None:
+    pending = [
+        m
+        for m in st.session_state.messages
+        if m.get("audio_status") == "processing" and m.get("tts_job_id")
+    ]
+    if not pending:
+        return
+    changed = False
+    for message in pending:
+        before = message.get("audio_status")
+        poll_tts_for_message(message.get("query_id"), message["tts_job_id"])
+        if message.get("audio_status") != before:
+            changed = True
+    if changed:
+        st.rerun()
 
 
 ensure_session_id()
 ensure_messages()
-
-if "last_voice_hash" not in st.session_state:
-    st.session_state.last_voice_hash = None
 
 if "uploader_key" not in st.session_state:
     st.session_state.uploader_key = 1
@@ -243,7 +411,16 @@ if "uploader_key" not in st.session_state:
 if "active_ingest_job_id" not in st.session_state:
     st.session_state.active_ingest_job_id = None
 
-st.title("📄 DocuMind AI")
+if "last_orb_id" not in st.session_state:
+    st.session_state.last_orb_id = None
+
+if "voice_pending_read" not in st.session_state:
+    st.session_state.voice_pending_read = ""
+
+if "voice_error" not in st.session_state:
+    st.session_state.voice_error = ""
+
+st.title("Agentic RAG")
 st.markdown("### Intelligent Document Analysis Platform")
 
 backend_ok, health_info = check_backend()
@@ -254,8 +431,19 @@ if not backend_ok:
     )
     st.json(health_info)
     st.stop()
-else:
-    st.caption(f"API: {Config.DOCUMIND_API_URL} · Qdrant: {health_info.get('qdrant', 'unknown')}")
+
+if Config.ENABLE_VOICE:
+    last = last_assistant_message()
+    orb_event = voice_orb(
+        api_url=Config.DOCUMIND_API_URL,
+        session_id=st.session_state.session_id,
+        last_answer=(last or {}).get("content") or "",
+        pending_read=st.session_state.get("voice_pending_read") or "",
+        enable_tts=Config.ENABLE_TTS,
+        key="talk_orb",
+    )
+    if consume_orb_event(orb_event):
+        st.rerun()
 
 tab_chat, tab_audit, tab_metrics = st.tabs(["💬 Chat", "📊 Audit Logs", "📈 Metrics"])
 
@@ -292,7 +480,7 @@ with st.sidebar:
     st.divider()
     st.markdown("### Processed Documents")
     try:
-        docs = api_client.list_documents()
+        docs = cached_documents()
         if docs:
             for doc in docs:
                 st.markdown(f"- 📄 {doc}")
@@ -303,15 +491,14 @@ with st.sidebar:
 
     st.divider()
     st.markdown("### Voice")
-    if Config.ENABLE_TTS:
-        st.checkbox(
-            "Read answers aloud",
-            value=True,
-            key="use_tts_output",
-            help="Synthesize assistant replies as audio in the browser.",
-        )
+    if Config.ENABLE_VOICE:
+        st.caption("Use the talk orb in the bottom-right. Click once to start a voice session; click again to hang up. Incomplete questions are repeated back to you.")
+        if not Config.ENABLE_TTS:
+            st.caption("TTS disabled (ENABLE_TTS=false).")
+        if st.session_state.get("voice_error"):
+            st.error(st.session_state.voice_error)
     else:
-        st.caption("TTS disabled (ENABLE_TTS=false).")
+        st.caption("Voice input is disabled (ENABLE_VOICE=false).")
 
     st.divider()
     st.markdown("### ⚙️ System Controls")
@@ -334,23 +521,42 @@ with tab_chat:
     chat_container = st.container()
 
     with chat_container:
-        for message in st.session_state.messages:
+        for i, message in enumerate(st.session_state.messages):
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
+                if message.get("heard"):
+                    st.caption(f"Heard: {message['heard']}")
                 if message.get("role") == "assistant" and message.get("citations"):
                     st.markdown("**Citations:**")
                     for c in message.get("citations", []):
                         st.markdown(f"- {c}")
 
                 if message.get("role") == "assistant":
-                    if message.get("audio_status") == "processing" and message.get("tts_job_id"):
-                        poll_tts_for_message(message["query_id"], message["tts_job_id"])
-                        if message.get("audio_status") == "processing":
-                            st.caption("🔊 *Synthesizing voice...*")
-                    elif message.get("audio"):
-                        st.audio(message["audio"], format="audio/wav")
-                    elif message.get("audio_status") == "failed":
-                        st.caption("🔇 Voice synthesis failed.")
+                    audio_status = message.get("audio_status")
+                    if message.get("audio"):
+                        _render_answer_audio(message)
+                    elif audio_status == "processing":
+                        st.caption("Synthesizing voice...")
+                    elif audio_status == "failed":
+                        st.caption("Voice synthesis failed.")
+
+                    if (
+                        Config.ENABLE_TTS
+                        and not message.get("audio")
+                        and message.get("audio_status") != "processing"
+                    ):
+                        play_key = f"play_{i}_{message.get('query_id') or 'msg'}"
+                        if st.button("Play answer", key=play_key):
+                            start_tts_for_message(message)
+                            st.rerun()
+
+        process_pending_query()
+
+        if any(
+            m.get("audio_status") == "processing" and m.get("tts_job_id")
+            for m in st.session_state.messages
+        ):
+            tts_poller()
 
     with chat_container:
         if st.session_state.get("last_sources"):
@@ -365,31 +571,9 @@ with tab_chat:
                         st.caption(f"{filename} - Page {page}")
                         st.text((doc.get("content") or "")[:500] + "...")
 
-    voice_enabled = Config.ENABLE_VOICE
-    tts_enabled = Config.ENABLE_TTS and st.session_state.get("use_tts_output", True)
-
-    if voice_enabled:
-        voice_audio = st.audio_input("Ask by voice")
-        if voice_audio is not None:
-            audio_bytes = voice_audio.getvalue()
-            audio_hash = hashlib.md5(audio_bytes).hexdigest()
-            if audio_hash != st.session_state.last_voice_hash:
-                st.session_state.last_voice_hash = audio_hash
-                with st.spinner("Transcribing..."):
-                    try:
-                        transcript = api_client.transcribe_audio(audio_bytes)
-                    except APIError as e:
-                        st.error(f"Speech recognition failed: {e}")
-                        transcript = ""
-                if transcript:
-                    st.caption(f"Heard: _{transcript}_")
-                    handle_user_query(transcript, tts_enabled=tts_enabled)
-                else:
-                    st.warning("Could not transcribe audio. Try again.")
-
     prompt = st.chat_input("Ask a question about your documents...")
     if prompt:
-        handle_user_query(prompt, tts_enabled=tts_enabled)
+        handle_user_query(prompt, tts_enabled=False)
 
 with tab_audit:
     st.header("System Audit Trail")

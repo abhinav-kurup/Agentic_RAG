@@ -8,7 +8,7 @@ from typing import Dict, Any
 from langsmith import traceable
 
 from core.state import AgentState
-from agents.retrieval_base import BaseRetrievalAgent, get_cross_encoder
+from agents.retrieval_base import BaseRetrievalAgent
 from agents.single_hop import SingleHopRetrievalAgent
 from agents.multi_hop import MultiHopRetrievalAgent
 

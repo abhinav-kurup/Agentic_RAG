@@ -37,3 +37,12 @@ class AgentState(TypedDict):
     final_response: Optional[str]
     audit_log: Annotated[List[Dict[str, Any]], operator.add]   # unchanged, this one's fine as-is
     citations: List[str]
+
+    # Agentic loop — working memory + control
+    topic_shift: bool
+    evidence_store: List[Dict[str, Any]]
+    hop_count: int
+    empty_retrievals: int
+    last_tool: Optional[str]
+    critic: Optional[Dict[str, Any]]
+    tool_trace: Annotated[List[Dict[str, Any]], operator.add]

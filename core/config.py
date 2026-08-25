@@ -16,20 +16,22 @@ class Config:
     RETRIEVAL_MODEL = os.getenv("RETRIEVAL_MODEL", "groq/llama-3.1-8b-instant")
     EXTRACTION_MODEL = os.getenv("EXTRACTION_MODEL", "gemini/gemini-2.0-flash-lite")
     ANALYSIS_MODEL = os.getenv("ANALYSIS_MODEL", "gemini/gemini-2.0-flash")
+    AGENT_MODEL = os.getenv("AGENT_MODEL", os.getenv("ANALYSIS_MODEL", "groq/llama-3.3-70b-versatile"))
+    AGENT_MAX_HOPS = int(os.getenv("AGENT_MAX_HOPS", "5"))
+    EVIDENCE_MAX_CHUNKS = int(os.getenv("EVIDENCE_MAX_CHUNKS", "10"))
+    MEMORY_MESSAGE_WINDOW = int(os.getenv("MEMORY_MESSAGE_WINDOW", "16"))
     RAGAS_EVAL_MODEL = os.getenv("RAGAS_EVAL_MODEL", "groq/llama-3.3-70b-versatile")
     EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
     OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
     GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+    COHERE_API_KEY = os.getenv("COHERE_API_KEY")
+    COHERE_RERANK_MODEL = os.getenv("COHERE_RERANK_MODEL", "rerank-v4.0-fast")
 
     USE_CROSS_ENCODER = os.getenv("USE_CROSS_ENCODER", "true").lower() in (
         "1",
         "true",
         "yes",
-    )
-    CROSS_ENCODER_MODEL = os.getenv(
-        "CROSS_ENCODER_MODEL",
-        "BAAI/bge-reranker-v2-m3",
     )
 
     ENABLE_VOICE = os.getenv("ENABLE_VOICE", "true").lower() in (
@@ -38,16 +40,28 @@ class Config:
         "yes",
     )
     ENABLE_TTS = os.getenv("ENABLE_TTS", "true").lower() in ("1", "true", "yes")
-    WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
-    WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
-    WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
+    WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small.en")
+    WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "auto")
+    WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "")
     WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "en") or None
-    TTS_SPEAKER_INDEX = int(os.getenv("TTS_SPEAKER_INDEX", "7306"))
+    PIPER_VOICE = os.getenv("PIPER_VOICE", "en_US-lessac-medium")
+    PIPER_VOICE_DIR = os.getenv("PIPER_VOICE_DIR", "data/piper_voices")
+    VOICE_ROUTER_MODEL = os.getenv("VOICE_ROUTER_MODEL", "groq/llama-3.1-8b-instant")
+    AUDIO_MAX_BYTES = int(os.getenv("AUDIO_MAX_BYTES", str(8 * 1024 * 1024)))
+    TTS_MAX_CHARS = int(os.getenv("TTS_MAX_CHARS", "8000"))
+    AUDIO_TTL_SECONDS = int(os.getenv("AUDIO_TTL_SECONDS", "86400"))
 
     API_HOST = os.getenv("API_HOST", "0.0.0.0")
     API_PORT = int(os.getenv("API_PORT", "8000"))
     DOCUMIND_API_URL = os.getenv("DOCUMIND_API_URL", "http://localhost:8000")
-    CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:8501").split(",")
+    CORS_ORIGINS = [
+        origin.strip()
+        for origin in os.getenv(
+            "CORS_ORIGINS",
+            "http://localhost:8501,http://127.0.0.1:8501",
+        ).split(",")
+        if origin.strip()
+    ]
     DOCUMENTS_DIR = os.getenv("DOCUMENTS_DIR", "data/documents")
     AUDIO_DIR = os.getenv("AUDIO_DIR", "data/audio")
     DOCUMENT_REGISTRY_PATH = os.getenv(

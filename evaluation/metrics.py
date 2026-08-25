@@ -2,6 +2,7 @@ from __future__ import annotations
 
 
 import math
+import os
 import re
 from typing import Dict, Iterable, List, Optional, Sequence, Set
 
@@ -141,19 +142,19 @@ class RateLimitedFallbackRagasLLM(LangchainLLMWrapper):
                 self._update_last_call()
 
 
-# 3-tier fallback chain: Groq 70B → Gemini Flash-Lite → Groq 8B
+# Fallback chain: configured judge → Gemini flash-lite variants
 try:
-    _primary  = get_llm("gemini/gemini-3.1-flash-lite",   temperature=0.0)
-    _fb1      = get_llm("gemini/gemini-2.5-flash-lite",    temperature=0.0)  # different provider
-    _fb2      = get_llm("gemini/gemini-2.1-flash",       temperature=0.0)  # separate TPD pool
+    _primary = get_llm(Config.RAGAS_EVAL_MODEL, temperature=0.0)
+    _fb1 = get_llm("gemini/gemini-2.5-flash-lite", temperature=0.0)
+    _fb2 = get_llm("gemini/gemini-2.0-flash-lite", temperature=0.0)
     _evaluator_llm = RateLimitedFallbackRagasLLM(_primary, fallbacks=[_fb1, _fb2])
 except Exception as e:
     print(f"Failed to initialize Ragas LLM judge: {e}")
     _evaluator_llm = None
 
-# Initialize Embeddings model once
+# Same embedding model as retrieval index (avoids MiniLM vs bge-m3 mismatch)
 try:
-    _embeddings_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    _embeddings_model = HuggingFaceEmbeddings(model_name=Config.EMBEDDING_MODEL)
     _evaluator_embeddings = LangchainEmbeddingsWrapper(_embeddings_model)
 except Exception as e:
     print(f"Failed to initialize Ragas Embeddings adapter: {e}")
@@ -169,7 +170,13 @@ def _tokens(value: str) -> List[str]:
 
 
 def _source_key(source_document: Optional[str], page_number: Optional[int]) -> str:
-    return f"{source_document or ''}::p{page_number or ''}".lower()
+    # Basename-only so path prefixes in payload vs gold do not break matching
+    name = os.path.basename(source_document) if source_document else ""
+    return f"{name}::p{page_number or ''}".lower()
+
+
+def _dedupe_preserve_order(keys: Sequence[str]) -> List[str]:
+    return list(dict.fromkeys(keys))
 
 
 def gold_source_keys(item: BenchmarkItem) -> Set[str]:
@@ -198,10 +205,12 @@ def mrr(gold: Set[str], retrieved: Sequence[str]) -> float:
 
 
 def ndcg_at_k(relevance_by_key: Dict[str, int], retrieved: Sequence[str], k: int) -> float:
+    """nDCG@k with unique keys only — duplicate doc::page hits no longer inflate DCG above IDCG."""
     def dcg(scores: Sequence[int]) -> float:
         return sum((2**score - 1) / math.log2(index + 2) for index, score in enumerate(scores))
 
-    gains = [relevance_by_key.get(key, 0) for key in retrieved[:k]]
+    unique_retrieved = _dedupe_preserve_order(retrieved)[:k]
+    gains = [relevance_by_key.get(key, 0) for key in unique_retrieved]
     ideal = sorted(relevance_by_key.values(), reverse=True)[:k]
     ideal_dcg = dcg(ideal)
     if ideal_dcg == 0:
@@ -311,23 +320,23 @@ def evaluate_batch(items: Sequence[BenchmarkItem], predictions: Sequence[Predict
     ]
     ground_truths = [item.ground_truth_answer or "" for item in items]
 
-    # Initialize default values
+    # None = judge failed / skipped — do not treat as 0 faithfulness or 100% hallucination
     for scores in all_scores:
         scores.update({
-            "context_recall": 0.0,
-            "faithfulness": 0.0,
-            "answer_relevancy": 0.0,
-            "answer_correctness": 0.0,
-            "hallucination_rate": 1.0,
+            "context_recall": None,
+            "faithfulness": None,
+            "answer_relevancy": None,
+            "answer_correctness": None,
+            "hallucination_rate": None,
         })
 
     if _evaluator_llm is not None:
         try:
             results_list = run_all_ragas_evaluations(
-                questions, answers, contexts_lists, ground_truths, 
+                questions, answers, contexts_lists, ground_truths,
                 _evaluator_llm, _evaluator_embeddings
             )
-            
+
             for idx, results in enumerate(results_list):
                 if results is None:
                     print(f"[Ragas Evaluation] Item {idx + 1} evaluation was skipped or failed.")
@@ -337,37 +346,45 @@ def evaluate_batch(items: Sequence[BenchmarkItem], predictions: Sequence[Predict
                     print(f"[Ragas Evaluation] Item {idx + 1} returned no results.")
                     continue
                 row = df.iloc[0]
-                def safe_float(val) -> float:
+
+                def safe_float(val) -> Optional[float]:
                     try:
                         fval = float(val)
-                        return 0.0 if math.isnan(fval) or math.isinf(fval) else fval
-                    except:
-                        return 0.0
+                        if math.isnan(fval) or math.isinf(fval):
+                            return None
+                        return fval
+                    except Exception:
+                        return None
 
-                ragas_faithfulness = safe_float(row.get("faithfulness", 0.0))
-                ragas_relevancy = safe_float(row.get("answer_relevancy", 0.0))
-                ragas_recall = safe_float(row.get("context_recall", 0.0))
-                ragas_correctness = safe_float(row.get("answer_correctness", 0.0))
+                ragas_faithfulness = safe_float(row.get("faithfulness"))
+                ragas_relevancy = safe_float(row.get("answer_relevancy"))
+                ragas_recall = safe_float(row.get("context_recall"))
+                ragas_correctness = safe_float(row.get("answer_correctness"))
 
                 print(f"[Ragas Evaluation] Item {idx + 1} Ragas scores:")
-                print(f"  - Faithfulness:      {ragas_faithfulness:.4f}")
-                print(f"  - Answer Relevancy:   {ragas_relevancy:.4f}")
-                print(f"  - Context Recall:     {ragas_recall:.4f}")
-                print(f"  - Answer Correctness: {ragas_correctness:.4f}")
+                print(f"  - Faithfulness:      {ragas_faithfulness}")
+                print(f"  - Answer Relevancy:   {ragas_relevancy}")
+                print(f"  - Context Recall:     {ragas_recall}")
+                print(f"  - Answer Correctness: {ragas_correctness}")
 
+                hallucination = (
+                    max(0.0, 1.0 - ragas_faithfulness)
+                    if ragas_faithfulness is not None
+                    else None
+                )
                 all_scores[idx].update({
                     "context_recall": ragas_recall,
                     "faithfulness": ragas_faithfulness,
                     "answer_relevancy": ragas_relevancy,
                     "answer_correctness": ragas_correctness,
-                    "hallucination_rate": max(0.0, 1.0 - ragas_faithfulness),
+                    "hallucination_rate": hallucination,
                 })
         except Exception as e:
             import traceback
             traceback.print_exc()
             print(f"Ragas evaluation failed: {e}")
     else:
-        print("Ragas evaluator LLM is not initialized. Using 0.0 as default values.")
+        print("Ragas evaluator LLM is not initialized. Leaving RAGAS metrics as null.")
 
     return all_scores
 

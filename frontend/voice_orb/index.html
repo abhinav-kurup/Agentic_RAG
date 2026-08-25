@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    :root {
+      --orb: #111111;
+      --ring: rgba(37, 99, 235, 0.35);
+      --accent: #2563eb;
+      --text: #334155;
+    }
+    html, body {
+      margin: 0;
+      background: transparent;
+      font-family: ui-sans-serif, system-ui, sans-serif;
+      overflow: hidden;
+      width: 100%;
+      height: 100%;
+    }
+    #wrap {
+      width: 240px;
+      height: 300px;
+      display: flex;
+      align-items: flex-end;
+      justify-content: flex-end;
+      box-sizing: border-box;
+      padding: 8px 8px 6px;
+      user-select: none;
+    }
+    #cluster {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      width: 196px;
+      gap: 8px;
+    }
+    #typed {
+      display: none;
+      width: 100%;
+      font-size: 11px;
+      line-height: 1.35;
+      color: #475569;
+      text-align: center;
+      max-height: 48px;
+      overflow: hidden;
+    }
+    #label {
+      width: 100%;
+      font-size: 11px;
+      line-height: 1.3;
+      color: var(--text);
+      text-align: center;
+      opacity: 0;
+      pointer-events: none;
+      min-height: 15px;
+      transition: opacity 0.25s ease;
+    }
+    #wrap.active #label {
+      opacity: 1;
+    }
+    #stage {
+      position: relative;
+      width: 62px;
+      height: 62px;
+      flex-shrink: 0;
+      cursor: pointer;
+      transition: width 0.38s cubic-bezier(0.22, 1, 0.36, 1),
+                  height 0.38s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    #wrap.active #stage {
+      width: 96px;
+      height: 96px;
+    }
+    .ring {
+      position: absolute;
+      inset: 2px;
+      border-radius: 50%;
+      border: 2px solid var(--ring);
+      opacity: 0;
+    }
+    #stage.listening .ring {
+      animation: expand 1.8s ease-out infinite;
+    }
+    #stage.listening .ring.r2 { animation-delay: 0.45s; }
+    #stage.listening .ring.r3 { animation-delay: 0.9s; }
+    #stage.thinking .ring {
+      inset: 0;
+      opacity: 0.7;
+      animation: spin 2.2s linear infinite;
+      border-color: transparent;
+      border-top-color: var(--accent);
+    }
+    #stage.speaking .ring {
+      opacity: 0.45;
+      animation: breathe 1.2s ease-in-out infinite;
+    }
+    #orb {
+      position: absolute;
+      inset: 6px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 35% 30%, #3a3a3a, var(--orb));
+      box-shadow: 0 4px 14px rgba(0,0,0,0.22);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      transition: background 0.2s ease, box-shadow 0.38s ease;
+    }
+    #wrap.active #orb {
+      box-shadow: 0 10px 28px rgba(37, 99, 235, 0.28);
+    }
+    #stage.listening #orb {
+      background: radial-gradient(circle at 35% 30%, #2563eb, #0f172a);
+    }
+    #stage.speaking #orb {
+      background: radial-gradient(circle at 35% 30%, #1d4ed8, #111);
+    }
+    canvas { width: 28px; height: 15px; }
+    #wrap.active canvas { width: 36px; height: 20px; }
+    @keyframes expand {
+      0% { transform: scale(0.85); opacity: 0.55; }
+      100% { transform: scale(1.45); opacity: 0; }
+    }
+    @keyframes breathe {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.12); }
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <div id="cluster">
+      <div id="typed"></div>
+      <div id="stage" class="idle">
+        <div class="ring r1"></div>
+        <div class="ring r2"></div>
+        <div class="ring r3"></div>
+        <div id="orb"><canvas id="wave" width="80" height="44"></canvas></div>
+      </div>
+      <div id="label">Click to talk</div>
+    </div>
+  </div>
+  <script>
+    const wrap = document.getElementById("wrap");
+    const stage = document.getElementById("stage");
+    const label = document.getElementById("label");
+    const typedEl = document.getElementById("typed");
+    const canvas = document.getElementById("wave");
+    const ctx = canvas.getContext("2d");
+    const STORE_KEY = "documind_orb";
+
+    let phase = "idle";
+    let sessionOn = false;
+    let apiUrl = "";
+    let sessionId = "";
+    let lastAnswer = "";
+    let pendingRead = "";
+    let pendingSpeak = "";
+    let enableTts = true;
+    let awaitingConfirm = false;
+    let busy = false;
+
+    let recorder = null;
+    let chunks = [];
+    let stream = null;
+    let audioCtx = null;
+    let analyser = null;
+    let raf = null;
+    let speechStarted = false;
+    let speechMs = 0;
+    let silenceMs = 0;
+    let lastTick = 0;
+    let starting = false;
+    let currentAudio = null;
+    let playDone = null;
+    let bargeMs = 0;
+    let speakStartedAt = 0;
+    let bargeArmed = false;
+    let restored = false;
+
+    const LISTEN_ENERGY = 0.04;
+    const BARGE_ENERGY = 0.03;
+    const BARGE_LOUD = 0.1;
+    const BARGE_HOLD_MS = 90;
+    const BARGE_GRACE_MS = 280;
+    const SILENCE_END_MS = 2500;
+    const MIN_SPEECH_MS = 700;
+
+    const LABELS = {
+      idle: "Click to talk",
+      listening: "Listening… · click to stop",
+      thinking: "Thinking…",
+      speaking: "Speaking… · talk to interrupt",
+    };
+
+    function sendMessage(type, data) {
+      window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type }, data || {}), "*");
+    }
+    function ready() {
+      sendMessage("streamlit:componentReady", { apiVersion: 1 });
+      sendMessage("streamlit:setFrameHeight", { height: 300 });
+    }
+    function sendValue(value) {
+      sendMessage("streamlit:setComponentValue", { value });
+    }
+    function sleep(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+    function eventId() {
+      return String(Date.now()) + "-" + Math.random().toString(36).slice(2, 8);
+    }
+
+    function setPhase(next) {
+      phase = next;
+      stage.className = next;
+      wrap.classList.toggle("active", next !== "idle");
+      if (next !== "thinking") label.textContent = LABELS[next] || next;
+      if (next !== "listening") drawIdleWave();
+      if (next === "idle") {
+        typedEl.style.display = "none";
+        typedEl.textContent = "";
+      }
+    }
+
+    function drawIdleWave() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = "rgba(255,255,255,0.85)";
+      for (let i = 0; i < 5; i++) {
+        const h = 6 + (i % 2) * 8;
+        ctx.fillRect(14 + i * 12, (canvas.height - h) / 2, 5, h);
+      }
+    }
+
+    function drawLive() {
+      if (!analyser) return;
+      const data = new Uint8Array(analyser.fftSize);
+      analyser.getByteTimeDomainData(data);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = "#fff";
+      const bars = 7;
+      const step = Math.floor(data.length / bars);
+      for (let i = 0; i < bars; i++) {
+        let sum = 0;
+        for (let j = 0; j < step; j++) sum += Math.abs(data[i * step + j] - 128);
+        const amp = Math.min(1, (sum / step) / 28);
+        const h = 5 + amp * (canvas.height - 10);
+        ctx.fillRect(8 + i * 10, (canvas.height - h) / 2, 5, h);
+      }
+    }
+
+    function rms() {
+      if (!analyser) return 0;
+      const data = new Uint8Array(analyser.fftSize);
+      analyser.getByteTimeDomainData(data);
+      let s = 0;
+      for (let i = 0; i < data.length; i++) {
+        const v = (data[i] - 128) / 128;
+        s += v * v;
+      }
+      return Math.sqrt(s / data.length);
+    }
+
+    function saveStore() {
+      try {
+        sessionStorage.setItem(STORE_KEY, JSON.stringify({
+          sessionOn, lastAnswer, pendingRead, pendingSpeak,
+        }));
+      } catch (e) {}
+    }
+
+    function loadStore() {
+      try {
+        return JSON.parse(sessionStorage.getItem(STORE_KEY) || "null");
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function tick(ts) {
+      const energy = rms();
+      const dt = lastTick ? Math.min(200, ts - lastTick) : 16;
+      lastTick = ts;
+
+      if (phase === "speaking") {
+        const inGrace = !bargeArmed || Date.now() - speakStartedAt < BARGE_GRACE_MS;
+        if (inGrace && energy < BARGE_LOUD) {
+          bargeMs = 0;
+        } else if (energy > BARGE_ENERGY) {
+          bargeMs += dt;
+          if (bargeMs >= BARGE_HOLD_MS || energy > BARGE_LOUD) {
+            interruptSpeech();
+            return;
+          }
+        } else {
+          bargeMs = 0;
+        }
+        raf = requestAnimationFrame(tick);
+        return;
+      }
+
+      if (phase !== "listening") return;
+      drawLive();
+      if (energy > LISTEN_ENERGY) {
+        speechStarted = true;
+        speechMs += dt;
+        silenceMs = 0;
+      } else if (speechStarted) {
+        silenceMs += dt;
+        if (speechMs >= MIN_SPEECH_MS && silenceMs > SILENCE_END_MS) {
+          stopRecorder(true);
+          return;
+        }
+      }
+      raf = requestAnimationFrame(tick);
+    }
+
+    async function armAnalyser() {
+      if (!stream) {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
+      }
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const src = audioCtx.createMediaStreamSource(stream);
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 1024;
+        src.connect(analyser);
+      }
+      if (audioCtx.state === "suspended") {
+        try { await audioCtx.resume(); } catch (e) {}
+      }
+    }
+
+    function startRecorder() {
+      if (!stream) return;
+      if (recorder && recorder.state !== "inactive") return;
+      chunks = [];
+      speechStarted = false;
+      speechMs = 0;
+      silenceMs = 0;
+      lastTick = 0;
+      const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : "audio/webm";
+      recorder = new MediaRecorder(stream, { mimeType: mime });
+      recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+      recorder.start();
+    }
+
+    async function resumeListen() {
+      if (!sessionOn || starting) return;
+      starting = true;
+      stopPlayback();
+      try {
+        await armAnalyser();
+        startRecorder();
+        setPhase("listening");
+        if (raf) cancelAnimationFrame(raf);
+        raf = requestAnimationFrame(tick);
+      } catch (err) {
+        label.textContent = "Microphone blocked";
+        sessionOn = false;
+        setPhase("idle");
+        saveStore();
+      } finally {
+        starting = false;
+      }
+    }
+
+    function interruptSpeech() {
+      bargeMs = 0;
+      bargeArmed = false;
+      stopPlayback();
+      if (!sessionOn) {
+        setPhase("idle");
+        return;
+      }
+      try {
+        startRecorder();
+        speechStarted = true;
+        speechMs = MIN_SPEECH_MS;
+        silenceMs = 0;
+        lastTick = 0;
+        setPhase("listening");
+        label.textContent = LABELS.listening;
+        if (raf) cancelAnimationFrame(raf);
+        raf = requestAnimationFrame(tick);
+      } catch (err) {
+        busy = false;
+        resumeListen();
+      }
+    }
+
+    function hangUp() {
+      sessionOn = false;
+      pendingSpeak = "";
+      awaitingConfirm = false;
+      busy = false;
+      stopPlayback();
+      cleanupMic();
+      setPhase("idle");
+      label.textContent = LABELS.idle;
+      saveStore();
+      sendValue({ id: eventId(), type: "hangup" });
+    }
+
+    function cleanupMic() {
+      if (raf) cancelAnimationFrame(raf);
+      raf = null;
+      if (recorder && recorder.state !== "inactive") {
+        try { recorder.stop(); } catch (e) {}
+      }
+      recorder = null;
+      if (stream) stream.getTracks().forEach((t) => t.stop());
+      stream = null;
+      if (audioCtx) { try { audioCtx.close(); } catch (e) {} }
+      audioCtx = null;
+      analyser = null;
+    }
+
+    function stopPlayback() {
+      bargeArmed = false;
+      if (currentAudio) {
+        try {
+          currentAudio.pause();
+          currentAudio.src = "";
+        } catch (e) {}
+        currentAudio = null;
+      }
+      if (playDone) {
+        const done = playDone;
+        playDone = null;
+        done("stopped");
+      }
+    }
+
+    function stopRecorder(send) {
+      if (!recorder || recorder.state === "inactive") {
+        recorder = null;
+        if (sessionOn && !busy) resumeListen();
+        return;
+      }
+      const rec = recorder;
+      recorder = null;
+      rec.onstop = async () => {
+        const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
+        chunks = [];
+        if (!sessionOn) return;
+        if (!send || blob.size < 1200) {
+          resumeListen();
+          return;
+        }
+        await handleUtterance(blob);
+      };
+      try { rec.stop(); } catch (e) { resumeListen(); }
+    }
+
+    async function typeOut(text) {
+      typedEl.style.display = "block";
+      typedEl.textContent = "";
+      label.textContent = "Typing your question…";
+      const chunk = Math.max(1, Math.ceil(text.length / 80));
+      for (let i = 0; i <= text.length; i += chunk) {
+        typedEl.textContent = text.slice(0, i);
+        await sleep(16);
+      }
+      typedEl.textContent = text;
+    }
+
+    async function speakText(text) {
+      if (!enableTts || !text) return "finished";
+      if (!sessionOn) return "stopped";
+      stopPlayback();
+      setPhase("speaking");
+      bargeMs = 0;
+      bargeArmed = true;
+      speakStartedAt = Date.now();
+      try {
+        await armAnalyser();
+        if (raf) cancelAnimationFrame(raf);
+        raf = requestAnimationFrame(tick);
+      } catch (err) {}
+      const res = await fetch(`${apiUrl}/voice/synthesize`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (!res.ok) {
+        return "error";
+      }
+      if (!sessionOn || phase !== "speaking") return "stopped";
+      const buf = await res.arrayBuffer();
+      if (!sessionOn || phase !== "speaking") return "stopped";
+      const url = URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
+      const result = await new Promise((resolve) => {
+        playDone = resolve;
+        const audio = new Audio(url);
+        currentAudio = audio;
+        audio.onended = () => resolve("finished");
+        audio.onerror = () => resolve("error");
+        speakStartedAt = Date.now();
+        bargeArmed = true;
+        audio.play().catch(() => resolve("error"));
+      });
+      playDone = null;
+      currentAudio = null;
+      URL.revokeObjectURL(url);
+      return result;
+    }
+
+    async function afterSpeak() {
+      busy = false;
+      if (!sessionOn) {
+        setPhase("idle");
+        return;
+      }
+      await sleep(600);
+      if (sessionOn) await resumeListen();
+    }
+
+    async function handleUtterance(blob) {
+      if (!sessionOn) return;
+      busy = true;
+      setPhase("thinking");
+      label.textContent = "Thinking…";
+      try {
+        const form = new FormData();
+        form.append("file", blob, "audio.webm");
+        form.append("session_id", sessionId);
+        form.append("awaiting_confirm", awaitingConfirm ? "true" : "false");
+        form.append("has_last_answer", lastAnswer ? "true" : "false");
+        const interpRes = await fetch(`${apiUrl}/voice/interpret`, { method: "POST", body: form });
+        if (!interpRes.ok) {
+          const detail = await interpRes.text();
+          throw new Error(detail || "Interpret failed");
+        }
+        const interp = await interpRes.json();
+        const intent = interp.intent || "ask";
+
+        if (intent === "hangup") {
+          hangUp();
+          return;
+        }
+
+        if (intent === "unheard") {
+          awaitingConfirm = false;
+          await afterSpeak();
+          return;
+        }
+
+        if (intent === "clarify") {
+          awaitingConfirm = false;
+          await speakText(interp.spoken_ack || "Could you repeat that?");
+          await afterSpeak();
+          return;
+        }
+
+        if (intent === "quiet" || intent === "confirm_no") {
+          awaitingConfirm = false;
+          pendingSpeak = "";
+          saveStore();
+          sendValue({ id: eventId(), type: "quiet" });
+          await afterSpeak();
+          return;
+        }
+
+        if (intent === "confirm_yes" || intent === "speak") {
+          const toRead = lastAnswer || pendingRead;
+          awaitingConfirm = false;
+          if (!toRead) {
+            await speakText("There's nothing to read yet.");
+            await afterSpeak();
+            return;
+          }
+          const spoken = await speakText(toRead);
+          if (spoken === "stopped") {
+            busy = false;
+            return;
+          }
+          sendValue({ id: eventId(), type: "confirm_done" });
+          await afterSpeak();
+          return;
+        }
+
+        const query = (interp.reconstructed_query || interp.transcript || "").trim();
+        if (!query) {
+          await speakText("Could you repeat that?");
+          await afterSpeak();
+          return;
+        }
+        await typeOut(query);
+        label.textContent = "Searching your documents…";
+        const chatRes = await fetch(`${apiUrl}/chat/query`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query, session_id: sessionId }),
+        });
+        if (!chatRes.ok) {
+          const detail = await chatRes.text();
+          throw new Error(detail || "Chat failed");
+        }
+        const chat = await chatRes.json();
+        lastAnswer = chat.response || "";
+        pendingRead = lastAnswer;
+        pendingSpeak = lastAnswer;
+        awaitingConfirm = false;
+        saveStore();
+        sendValue({
+          id: eventId(),
+          type: "turn",
+          transcript: interp.transcript || "",
+          reconstructed_query: query,
+          response: chat.response || "",
+          citations: chat.citations || [],
+          query_id: chat.query_id || "",
+          audit_log: chat.audit_log || [],
+          retrieved_docs: chat.retrieved_docs || [],
+        });
+        const spoken = await speakText(lastAnswer);
+        pendingSpeak = "";
+        saveStore();
+        if (spoken === "stopped") {
+          busy = false;
+          return;
+        }
+        await afterSpeak();
+      } catch (err) {
+        sendValue({ id: eventId(), type: "error", message: String(err.message || err) });
+        busy = false;
+        if (sessionOn) {
+          await speakText("Something went wrong. Could you repeat that?");
+          await afterSpeak();
+        } else {
+          setPhase("idle");
+          label.textContent = "Voice error — click to retry";
+        }
+      }
+    }
+
+    document.getElementById("stage").addEventListener("click", () => {
+      if (!sessionOn) {
+        sessionOn = true;
+        saveStore();
+        resumeListen();
+        return;
+      }
+      hangUp();
+    });
+
+    window.addEventListener("message", (event) => {
+      if (event.data?.type !== "streamlit:render") return;
+      const args = event.data.args || {};
+      apiUrl = String(args.api_url || "").replace(/\/$/, "");
+      sessionId = String(args.session_id || "");
+      lastAnswer = String(args.last_answer || lastAnswer || "");
+      enableTts = args.enable_tts !== false;
+      const nextPending = String(args.pending_read || "");
+      if (nextPending) {
+        pendingRead = nextPending;
+        lastAnswer = nextPending || lastAnswer;
+      }
+    });
+
+    drawIdleWave();
+    ready();
+    const stored = loadStore();
+    if (stored && stored.sessionOn) {
+      restored = true;
+      sessionOn = true;
+      lastAnswer = stored.lastAnswer || lastAnswer;
+      pendingRead = stored.pendingRead || pendingRead;
+      pendingSpeak = stored.pendingSpeak || "";
+      if (pendingSpeak) {
+        (async () => {
+          await armAnalyser();
+          const spoken = await speakText(pendingSpeak);
+          pendingSpeak = "";
+          saveStore();
+          if (spoken !== "stopped") await afterSpeak();
+        })();
+      } else {
+        resumeListen();
+      }
+    }
+  </script>
+</body>
+</html>

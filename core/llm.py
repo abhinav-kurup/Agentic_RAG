@@ -13,7 +13,6 @@ def get_llm(model_identifier: str, temperature: float = 0.2, timeout: int = 30):
       - "ollama/llama3"
     If no prefix is provided, defaults to ollama.
     """
-    print(model_identifier)
     if model_identifier.startswith("gemini/"):
         from langchain_google_genai import ChatGoogleGenerativeAI
         model_name = model_identifier.split("gemini/")[1]

@@ -1,52 +1,45 @@
 import asyncio
 import logging
 import hashlib
-import threading
 from typing import Dict, Any, List
 from langsmith import traceable
+import httpx
 
 from core.config import Config
 from core.llm import get_llm
-from sentence_transformers import CrossEncoder
 
 logger = logging.getLogger(__name__)
 
-# Cross-Encoder Model Singleton & Locks
-_cross_encoder_instance = None
-_cross_encoder_lock = threading.Lock()
-_cross_encoder_load_failed = False
-_predict_lock = threading.Lock()
+COHERE_RERANK_URL = "https://api.cohere.com/v2/rerank"
 
 
-def get_cross_encoder():
-    """Process-wide lazy singleton for CrossEncoder reranking model."""
-    global _cross_encoder_instance, _cross_encoder_load_failed
-
-    if not Config.USE_CROSS_ENCODER or _cross_encoder_load_failed:
-        return None
-    if _cross_encoder_instance is not None:
-        return _cross_encoder_instance
-
-    with _cross_encoder_lock:
-        if _cross_encoder_load_failed:
-            return None
-        if _cross_encoder_instance is not None:
-            return _cross_encoder_instance
-        try:
-            logger.info("Loading CrossEncoder for reranking: %s", Config.CROSS_ENCODER_MODEL)
-            _cross_encoder_instance = CrossEncoder(Config.CROSS_ENCODER_MODEL)
-            logger.info("CrossEncoder ready")
-        except Exception as e:
-            logger.error("Failed to load CrossEncoder: %s", e)
-            _cross_encoder_load_failed = True
-            return None
-
-    return _cross_encoder_instance
-
-
-def _predict_cross_encoder_pairs(cross_encoder, pairs):
-    with _predict_lock:
-        return cross_encoder.predict(pairs)
+async def _cohere_rerank_scores(query: str, texts: List[str]) -> List[float]:
+    """Score documents with Cohere Rerank v2. Raises on HTTP/API errors."""
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        response = await client.post(
+            COHERE_RERANK_URL,
+            headers={
+                "Authorization": f"Bearer {Config.COHERE_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": Config.COHERE_RERANK_MODEL,
+                "query": query,
+                "documents": texts,
+            },
+        )
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"Cohere rerank {response.status_code}: {response.text[:300]}"
+            )
+        payload = response.json()
+    scores = [0.0] * len(texts)
+    for item in payload.get("results") or []:
+        idx = item.get("index")
+        if not isinstance(idx, int) or idx < 0 or idx >= len(texts):
+            continue
+        scores[idx] = float(item.get("relevance_score", 0.0))
+    return scores
 
 
 class BaseRetrievalAgent:
@@ -126,26 +119,30 @@ class BaseRetrievalAgent:
     async def _rerank_documents(
         self, query: str, docs: List[Dict], subqueries: List[str], protected_hashes: set = None
     ) -> List[Dict]:
-        """Reranks candidate documents using Cross-Encoder asynchronously."""
-        cross_encoder = get_cross_encoder()
-        pairs = [[query, doc["content"]] for doc in docs]
+        """Reranks candidate documents using Cohere rerank-v4.0-fast."""
+        reranked = False
+        if Config.USE_CROSS_ENCODER and docs:
+            if not Config.COHERE_API_KEY:
+                logger.warning(
+                    "Rerank enabled but COHERE_API_KEY is missing; using hybrid scores."
+                )
+            else:
+                try:
+                    scores = await _cohere_rerank_scores(
+                        query, [doc["content"] for doc in docs]
+                    )
+                    for doc, score in zip(docs, scores):
+                        doc["score"] = score
+                    reranked = True
+                    logger.info(
+                        "Cohere %s reranked %d documents against original query.",
+                        Config.COHERE_RERANK_MODEL,
+                        len(docs),
+                    )
+                except Exception as e:
+                    logger.error("Cohere reranking failed: %s", e)
 
-        if cross_encoder and pairs:
-            try:
-                # Offload heavy CrossEncoder neural inference to thread
-                scores = await asyncio.to_thread(_predict_cross_encoder_pairs, cross_encoder, pairs)
-                for doc_idx, doc in enumerate(docs):
-                    doc["score"] = float(scores[doc_idx])
-                logger.info(f"Cross-encoder reranked {len(docs)} documents against original query.")
-            except Exception as e:
-                logger.error(f"Cross-encoder reranking failed: {e}")
-                for doc in docs:
-                    doc["score"] = 0.0
-        else:
-            for doc in docs:
-                doc["score"] = 0.0
-
-        if docs:
+        if docs and reranked:
             ce_scores = [d.get("score", 0.0) for d in docs]
             rrf_scores = [
                 d.get("rrf_score") if d.get("rrf_score") is not None else d.get("score", 0.0)
@@ -166,9 +163,11 @@ class BaseRetrievalAgent:
                 doc["rrf_score_raw"] = rrf_raw
                 doc["score"] = 0.7 * ce_norm + 0.3 * rrf_norm
 
+        if docs:
             docs = sorted(docs, key=lambda x: x.get("score", -float("inf")), reverse=True)
             max_score = docs[0]["score"]
-            threshold = max_score * 0.6
+            # Softer than 0.6×max so secondary gold pages are less often dropped
+            threshold = max_score * 0.45
 
             filtered_docs = []
             for d in docs:
@@ -176,8 +175,8 @@ class BaseRetrievalAgent:
                 if d["score"] >= threshold or (protected_hashes and h in protected_hashes):
                     filtered_docs.append(d)
 
-            if len(filtered_docs) < 3:
-                filtered_docs = docs[:3]
+            if len(filtered_docs) < 5:
+                filtered_docs = docs[:5]
 
             logger.info(
                 f"Filtered candidate pool from {len(docs)} to {len(filtered_docs)} documents "
@@ -200,7 +199,7 @@ class BaseRetrievalAgent:
 
     @traceable(name="SelectDiverseContexts")
     def _select_diverse_contexts(
-        self, reranked_docs: List[Dict], subqueries: List[str], limit: int = 5
+        self, reranked_docs: List[Dict], subqueries: List[str], limit: int = 6
     ) -> List[Dict]:
         """Greedily selects chunks using diversity penalty and coverage bonus."""
         selected = []
@@ -266,7 +265,7 @@ class BaseRetrievalAgent:
     ) -> List[Dict]:
         """Unified async post-processing: top-1 protection, reranking, diversity selection, and JSON formatting."""
         print(f"[Retrieval Merging] Total merged candidate documents before reranking: {len(candidate_docs)}")
-        print("[Retrieval Output] Retrieved documents before cross-encoder:")
+        print("[Retrieval Output] Retrieved documents before rerank:")
         for idx, doc in enumerate(candidate_docs):
             print(
                 f"  {idx + 1}. Source: {doc['metadata'].get('source')} (Page {doc['metadata'].get('page_number')}) "
@@ -282,14 +281,14 @@ class BaseRetrievalAgent:
             query, candidate_docs, ordered_subqueries, protected_hashes=protected_hashes
         )
 
-        print("[Reranking Scores] Documents after Cross-Encoder reranking:")
+        print("[Reranking Scores] Documents after Cohere reranking:")
         for idx, doc in enumerate(reranked_docs):
             print(
                 f"  {idx + 1}. Source: {doc['metadata'].get('source')} (Page {doc['metadata'].get('page_number')}) "
                 f"| Score: {doc.get('score')} | RRF: {doc.get('rrf_score')}"
             )
 
-        final_docs = self._select_diverse_contexts(reranked_docs, ordered_subqueries, limit=5)
+        final_docs = self._select_diverse_contexts(reranked_docs, ordered_subqueries, limit=6)
 
         for d in final_docs:
             if "subqueries_matched" in d and isinstance(d["subqueries_matched"], set):

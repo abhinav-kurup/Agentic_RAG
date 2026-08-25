@@ -23,7 +23,7 @@ def parse_agent_state_to_prediction(item: BenchmarkItem, state, completed: bool)
                 content=doc.get("content", ""),
                 source_document=meta.get("source"),
                 page_number=meta.get("page_number"),
-                chunk_id=doc.get("chunk_id"),
+                chunk_id=meta.get("chunk_id") or meta.get("id") or doc.get("chunk_id"),
                 score=doc.get("score")
             )
         )

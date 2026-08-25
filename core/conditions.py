@@ -1,35 +1,24 @@
 import logging
 
-from langgraph.graph import END
-
 from core.state import AgentState
 
 logger = logging.getLogger(__name__)
 
 
-def route_query(state: AgentState) -> str:    
+def route_query(state: AgentState) -> str:
+    """Greetings skip retrieval. Everything else enters the agentic ReAct loop."""
     route = state.get("route", "single_hop")
     if route == "conversational":
         return "conversational"
-    elif route == "multi_hop":
-        return "multi_hop"
-    return "single_hop"
+    return "agentic"
 
 
-def route_after_analysis(state: AgentState):
-    """End on final_response or errors; only route to tools when the LLM requested them."""
-    if state.get("final_response"):
-        return END
-
+def after_agent(state: AgentState) -> str:
+    """Continue the ReAct loop on native tool_calls; otherwise synthesize."""
     messages = state.get("messages") or []
     if not messages:
-        logger.warning(
-            "Analysis left no messages and no final_response; ending workflow."
-        )
-        return END
-
+        return "prepare"
     last = messages[-1]
-    tool_calls = getattr(last, "tool_calls", None) or []
-    if tool_calls:
+    if getattr(last, "tool_calls", None):
         return "tools"
-    return END
+    return "prepare"

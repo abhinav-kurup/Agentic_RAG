@@ -22,7 +22,8 @@ class MultiHopRetrievalAgent(BaseRetrievalAgent):
             return {"audit_log": [{"step": "MultiHopRetrievalAgent", "status": "Skipped", "reason": "Empty query"}]}
 
         subqueries = state.get("subqueries", [])
-        active_subqueries = list(set([query] + subqueries))
+        # Dedupe while preserving order (set() was nondeterministic)
+        active_subqueries = list(dict.fromkeys([query] + list(subqueries or [])))
         k = max(8, min(15, 40 // len(active_subqueries)))
 
         print(f"[Retrieval Route] Multi-hop active subqueries: {active_subqueries} (k={k})")

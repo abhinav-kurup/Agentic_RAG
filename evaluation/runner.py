@@ -35,14 +35,17 @@ def write_json(path: Path, payload: object) -> None:
 
 
 def aggregate(scores: Iterable[Dict[str, float]]) -> Dict[str, float]:
+    """Mean over non-null values so failed RAGAS items do not pull aggregates to 0."""
     rows = list(scores)
     if not rows:
         return {}
     metric_names = sorted({name for row in rows for name in row})
-    return {
-        metric: mean(row.get(metric, 0.0) for row in rows)
-        for metric in metric_names
-    }
+    aggregated: Dict[str, float] = {}
+    for metric in metric_names:
+        values = [row[metric] for row in rows if row.get(metric) is not None]
+        if values:
+            aggregated[metric] = mean(values)
+    return aggregated
 
 
 def trace_load_dataset(benchmark_path: Path, predictions_path: Path):

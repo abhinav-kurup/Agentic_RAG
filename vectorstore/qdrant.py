@@ -21,6 +21,7 @@ from fastembed import SparseTextEmbedding
 from langchain_huggingface import HuggingFaceEmbeddings
 
 from core.config import Config
+from core.device import torch_device
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,17 @@ class QdrantVectorStoreManager:
 
         # Initialize Embedders
         logger.info("Initializing Dense Embedder (BAAI/bge-m3)...")
-        self.dense_embedder = HuggingFaceEmbeddings(model_name=Config.EMBEDDING_MODEL)
+        device = torch_device()
+        model_kwargs = {"device": device}
+        if device == "cuda":
+            import torch
+
+            model_kwargs["model_kwargs"] = {"torch_dtype": torch.float16}
+        self.dense_embedder = HuggingFaceEmbeddings(
+            model_name=Config.EMBEDDING_MODEL,
+            model_kwargs=model_kwargs,
+        )
+        logger.info("Dense embedder device: %s", device)
 
         logger.info("Initializing Sparse Embedder (Qdrant/bm25)...")
         self.sparse_embedder = SparseTextEmbedding(model_name="Qdrant/bm25")
